@@ -1,4 +1,4 @@
-# Biometric behaviour spec (v0.4)
+# Biometric behaviour spec (v0.5)
 
 Premise: you control a small mechanical bug in a world of living bugs. The
 bug's vital signs (biometrics) are part of play and show up in how it moves.
@@ -30,7 +30,8 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
 | Dash duration | 0.14 | s |
 | Dash cooldown (from dash start) | 0.55 | s |
 | Dash input buffer | 0.10 | s |
-| Charges at start | 1 | |
+| Charges at start / max | 10 / 30 | |
+| Health | 10 | |
 
 ### Movement
 
@@ -48,8 +49,9 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
 
 ### Dash
 
-0. Every dash spends one **charge**. You start with `startCharges` (1); each
-   battery cell picked up adds one; there is no cap. No charge, no dash.
+0. Every dash spends one **charge**. You start with 10, the most you can hold
+   is 30. A small battery cell adds 3, a big red battery adds 9 (capped at 30;
+   anything over the cap is lost). No charge, no dash.
 1. A dash press is remembered for the buffer window (0.10 s). If the dash
    becomes available inside that window, it fires then.
 2. Dash direction is the current input direction, or the facing direction
@@ -147,11 +149,12 @@ blow up or jitter.
 | Lunge speed / time | 6.5 / 0.35 | tiles/s, s |
 | Thrown speed / time | 5 / 0.5 | tiles/s, s |
 | Attack cooldown | 3 | s |
-| Hit: heat / knockback / stun / invulnerable | 0.45 / 7 / 0.35 / 0.8 | heat, tiles/s, s, s |
+| Hit: health / heat / knockback / stun / invulnerable | −1 / 0.45 / 7 / 0.35 / 0.8 | hp, heat, tiles/s, s, s |
 | Dash kill reach (beyond touching) | 0.12 | tiles |
 
-1. Spawn at `b` or `s` in the level map. Movement is in the simulation with
-   a seeded PRNG, so a run is reproducible from its seed.
+1. Spawn from vents (see Vents); `b` or `s` in a map places one at the start
+   (used by tests). Movement is in the simulation with a seeded PRNG, so a
+   run is reproducible from its seed.
 2. **Alone they are cowards.** A spider with no partner wanders (new heading
    or a pause every 0.8–2.6 s) and runs from the player inside the fear radius.
    If the player is within aggro range and another free spider is within
@@ -173,13 +176,72 @@ blow up or jitter.
 8. Drawn with eight legs (two alternating groups of four, at most four feet
    in the air), a large abdomen and eyes that always glint faintly.
 
+## Health and death
+
+1. The bug has 10 health. Each spider hit costs 1 (plus the heat, knockback
+   and stun listed under Spiders).
+2. At 0 health the bug dies: the simulation freezes (no input, timer stops)
+   and the run is lost. `R` restarts.
+
 ## Battery cells
 
 (Called `shards` in the code.)
 
+| Kind | Map char | Charges |
+|---|---|---|
+| Small cell | `*` | +3 |
+| Big red battery | `B` | +9 |
+
 1. Picked up when the player centre is within `radius + 0.35` of the cell.
-2. When every shard is collected the run is won and the timer stops.
+2. When every cell (small and big) is collected the run is won and the timer stops.
 3. `R` restarts the level with the current tunables.
+
+## Vents
+
+| Property | Default | Unit |
+|---|---|---|
+| First spawn | 1.5 – 3.5 | s |
+| Spawn interval | 4 – 8 | s, per vent |
+| Most spiders alive at once | 8 | |
+| No spawn if the player is within | 1.5 | tiles |
+| Emerging | 0.6 | s |
+| Corpses stay for | 12 | s |
+
+1. Vents (`V` in the map) are floor grates; you can walk over them.
+2. Each vent has its own timer (seeded PRNG). When it runs out and fewer than
+   8 spiders are alive, a spider crawls out; the timer restarts.
+3. A new spider spends 0.6 s emerging (it can't move or attack, but a dash
+   kills it), then gets a 1.5 s attack cooldown before it may pair up.
+4. Dead spiders are removed after 12 s; the renderer leaves their husk on the
+   floor.
+
+## Events
+
+The simulation appends events to `state.events` (`spawn`, `kill` with the dash
+direction, `hit`, `pickup`, `corpse`, `death`, `win`). The browser drains them
+each frame for effects. Simulation logic never reads them.
+
+## HUD: vitals panel
+
+Bottom left, pixel art in a biomechanical (H. R. Giger-like) style: bone
+vertebrae, ribs and black tubing.
+
+1. Health: a spine of 10 vertebrae, each holding a capsule of blood. Lost
+   health leaves a dark, cracked capsule. Flashes on a hit.
+2. Charges: 10 housings of 3 cell slots each (30 slots).
+3. A heart-like organ at the end beats at the bug's BPM and goes dark when
+   charges run out.
+
+## Player out of charges
+
+With 0 charges the bug goes dark: dull shell, unlit eye, no back light (it
+stops blinking) and no head lamp or glow.
+
+## Blood
+
+A dash kill sprays a splatter generated on the spot: a pool where the
+spider died and droplets and streaks thrown along the dash direction (never
+onto walls). Splatters and husks stay on the floor for the rest of the run.
 
 ## Look
 
@@ -197,8 +259,13 @@ blow up or jitter.
 4. Rain in screen space, drawn before lighting so it shows near lights.
 5. Look settings are tunable: art pixel size, dither, darkness, rain, palette on/off.
 
+## Arena
+
+32 × 32 tiles, mostly open: a few pillars and broken wall stubs, 5 vents,
+12 small cells and 3 big red batteries.
+
 ## Not decided yet
 
-- A fail state: hits only cost heat, time and control for now; no health or death.
 - Whether killing spiders matters for winning (it doesn't yet).
+- Health pickups or regeneration (none yet).
 - Art direction beyond placeholder shapes.

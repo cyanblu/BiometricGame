@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createState, step, DEFAULT_PARAMS, STEP, inputToWorld, worldToScreen, wallClearance,
+  createState, step, DEFAULT_PARAMS, STEP, inputToWorld, worldToScreen, wallClearance, makeSpider,
 } from '../src/sim.js';
 import { LEVELS } from '../src/levels.js';
 
@@ -145,14 +145,17 @@ test('deterministic: same inputs give the same state', () => {
 test('critters never end up inside walls and the run is reproducible', () => {
   const script = (i) => ({ x: Math.sin(i / 31), y: Math.cos(i / 19), dash: i % 50 === 0 });
   const a = createState(LEVELS[0], 7);
-  assert.ok(a.critters.length >= 4);
+  let spawned = 0;
   for (let i = 0; i < 60 * 60; i++) {
     step(a, script(i), P);
+    spawned += a.events.filter((e) => e.type === 'spawn').length;
+    a.events.length = 0;
     for (const c of a.critters) {
       const gap = wallClearance(a, P.critterRadius, c);
       assert.ok(gap > -1e-6, `critter overlap ${gap} at tick ${i}`);
     }
   }
+  assert.ok(spawned >= 6, `vents spawned only ${spawned}`);
   const b = run(createState(LEVELS[0], 7), script, 60);
   assert.deepEqual(a.critters.map((c) => [c.x, c.y]), b.critters.map((c) => [c.x, c.y]));
 });
@@ -208,20 +211,29 @@ test('overheat: hitting full heat blocks dashing and slows you until it cools', 
 // ---- dash charges ---------------------------------------------------------
 
 test('charges: start with startCharges, a dash spends one, none left means no dash', () => {
+  const cool = { ...P, dashHeat: 0 }; // keep overheat out of this test
   const s = createState(open);
   assert.equal(s.player.charges, P.startCharges);
-  for (let i = 0; i < P.startCharges; i++) { step(s, { dash: true }); run(s, {}, P.dashCooldown + STEP); }
+  assert.equal(P.startCharges, 10);
+  for (let i = 0; i < P.startCharges; i++) { step(s, { dash: true }, cool); run(s, {}, P.dashCooldown + STEP, cool); }
   assert.equal(s.player.charges, 0);
-  step(s, { x: 1, y: 0, dash: true });
+  step(s, { x: 1, y: 0, dash: true }, cool);
   assert.equal(s.player.dashTime, 0, 'no charge, no dash');
 });
 
-test('charges: each battery cell picked up adds one', () => {
-  const lvl = { name: 'c', map: ['######', '#P***#', '######'] };
-  const s = createState(lvl);
+test('charges: small cell +3, big red battery +9', () => {
+  const s = createState({ name: 'c', map: ['#######', '#P**B.#', '#######'] });
   run(s, toward(1, 0), 1.2);
   assert.equal(s.collected, 3);
-  assert.equal(s.player.charges, P.startCharges + 3);
+  assert.equal(s.player.charges, P.startCharges + 2 * P.smallCharge + P.bigCharge);
+  assert.deepEqual(s.events.filter((e) => e.type === 'pickup').map((e) => e.big), [false, false, true]);
+});
+
+test('charges: capped at maxCharges', () => {
+  const s = createState({ name: 'c', map: ['########', '#PBBB..#', '########'] });
+  run(s, toward(1, 0), 1.2);
+  assert.equal(s.collected, 3);
+  assert.equal(s.player.charges, P.maxCharges);
 });
 
 // ---- spiders ---------------------------------------------------------------
@@ -229,10 +241,8 @@ test('charges: each battery cell picked up adds one', () => {
 // Player at the left of a room; spiders placed relative to it.
 function arena(spiders, extra = {}) {
   const s = createState({ name: 'a', map: ['############', '#..........#', '#..........#', '#.P........#', '#..........#', '#..........#', '############'] });
-  s.critters = spiders.map(([x, y]) => ({
-    x, y, px: x, py: y, vx: 0, vy: 0, dirX: 0, dirY: 0, timer: 99, fleeing: false,
-    alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false, lungeX: 0, lungeY: 0, stateTime: 0, ...extra,
-  }));
+  s.critters = [];
+  for (const [x, y] of spiders) makeSpider(s, x, y, { timer: 99, ...extra });
   return s;
 }
 
@@ -256,8 +266,8 @@ test('a pair winds up before lunging (telegraph)', () => {
   const s = arena([[5, 3.2], [5, 3.9]]);
   run(s, {}, P.windup * 0.5);
   assert.ok(s.critters.every((c) => c.mode === 'windup'));
-  assert.equal(s.critters[0].partner, 1);
-  assert.equal(s.critters[1].partner, 0);
+  assert.equal(s.critters[0].partner, s.critters[1].id);
+  assert.equal(s.critters[1].partner, s.critters[0].id);
 });
 
 test('after attacking, the pair is thrown apart and cannot attack again right away', () => {
@@ -313,4 +323,92 @@ test('while stunned after a hit, input is ignored', () => {
   const charges = s.player.charges;
   step(s, { x: -1, y: 0, dash: true });
   assert.equal(s.player.charges, charges, 'no dash while stunned');
+});
+
+// ---- health, death -----------------------------------------------------------
+
+test('health: starts at maxHealth, a hit costs hitDamage', () => {
+  const s = arena([[5, 3.2], [5, 3.9]]);
+  assert.equal(s.player.health, P.maxHealth);
+  while (s.hits === 0 && s.time < 2) step(s, {});
+  assert.equal(s.player.health, P.maxHealth - P.hitDamage);
+  const ev = s.events.find((e) => e.type === 'hit');
+  assert.equal(ev.health, P.maxHealth - P.hitDamage);
+});
+
+test('death at 0 health freezes the run', () => {
+  const s = arena([[5, 3.2], [5, 3.9]]);
+  s.player.health = 1;
+  while (!s.dead && s.time < 2) step(s, {});
+  assert.ok(s.dead);
+  assert.ok(s.events.some((e) => e.type === 'death'));
+  const t = s.time, x = s.player.x, charges = s.player.charges;
+  run(s, { x: 1, y: 0, dash: true }, 1);
+  assert.equal(s.time, t);
+  assert.equal(s.player.x, x);
+  assert.equal(s.player.charges, charges);
+});
+
+// ---- vents, corpses, events --------------------------------------------------
+
+const ventRoom = { name: 'v', map: ['##########', '#........#', '#.P....V.#', '#........#', '##########'] };
+
+test('vents spawn spiders that emerge, then wait before they can pair', () => {
+  const s = createState(ventRoom, 3);
+  assert.equal(s.critters.length, 0);
+  while (s.critters.length === 0 && s.time < P.ventFirstMax + STEP) step(s, {});
+  assert.equal(s.critters.length, 1, 'spawned within the first-spawn window');
+  const c = s.critters[0];
+  assert.equal(c.mode, 'emerge');
+  assert.deepEqual([c.x, c.y], [s.vents[0].x, s.vents[0].y]);
+  run(s, {}, P.emergeTime + STEP);
+  assert.equal(c.mode === 'emerge', false);
+  assert.ok(c.cooldown > 0, 'fresh spider has an attack cooldown');
+});
+
+test('vents never exceed maxSpiders alive', () => {
+  const s = createState(ventRoom, 5, P);
+  let most = 0;
+  for (let i = 0; i < 60 * 120; i++) {
+    step(s, {});
+    most = Math.max(most, s.critters.filter((c) => c.alive).length);
+  }
+  assert.ok(most <= P.maxSpiders, `most alive ${most}`);
+  assert.ok(most >= 3, `vents should have spawned a crowd, most ${most}`);
+});
+
+test('no spawn while the player stands on a vent', () => {
+  const s = createState(ventRoom, 3);
+  s.player.x = s.vents[0].x; s.player.y = s.vents[0].y;
+  run(s, {}, 10);
+  assert.equal(s.critters.length, 0);
+});
+
+test('a kill reports the dash direction; the corpse is removed after corpseTime', () => {
+  const s = arena([[4.4, 3.5]], { cooldown: 99 });
+  s.critters[0].mode = 'thrown'; s.critters[0].stateTime = 99;
+  s.player.faceX = 1; s.player.faceY = 0;
+  step(s, { dash: true });
+  run(s, {}, P.dashDuration);
+  const kill = s.events.find((e) => e.type === 'kill');
+  assert.ok(kill);
+  assert.deepEqual([kill.dirX, kill.dirY], [1, 0]);
+  run(s, {}, P.corpseTime + STEP);
+  assert.equal(s.critters.length, 0);
+  assert.ok(s.events.some((e) => e.type === 'corpse' && e.id === kill.id));
+});
+
+test('a dash kills an emerging spider', () => {
+  const s = arena([[4.4, 3.5]], { mode: 'emerge', stateTime: 99, stateTotal: 99 });
+  s.player.faceX = 1; s.player.faceY = 0;
+  step(s, { dash: true });
+  run(s, {}, P.dashDuration);
+  assert.equal(s.kills, 1);
+});
+
+test('a level without cells is never won (and time keeps running)', () => {
+  const s = createState(open);
+  run(s, {}, 1);
+  assert.equal(s.won, false);
+  assert.ok(Math.abs(s.time - 1) < 1e-9);
 });

@@ -44,8 +44,17 @@ body {
 #hud-dash.ready::after { background: var(--visor); }
 #hud-dash.blocked::after { background: var(--hot); }
 #hud-bpm { transition: color 0.2s; }
-#hud-charges { color: var(--visor); }
-#hud-charges.empty { color: var(--hot); }
+/* Vitals: pixel sprite (132 x 40) scaled up crisp, bottom left. */
+.vitals-box {
+  --vs: 3;
+  position: fixed; left: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  display: grid; gap: 2px; pointer-events: none;
+}
+#vitals { width: calc(132px * var(--vs)); height: calc(40px * var(--vs)); image-rendering: pixelated; display: block; }
+.vitals-cap { display: flex; justify-content: space-between; padding-inline: calc(26px * var(--vs)) 8px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+#cap-hp { color: #b8262a; }
+#cap-ch { color: var(--ember); }
+#cap-ch.empty { color: var(--hot); }
 #hud-bpm.hot { color: var(--hot); }
 .motion { display: grid; gap: 8px; }
 .motion canvas { width: 100%; height: auto; aspect-ratio: 536 / 200; background: var(--night); border: 1px solid var(--line); border-radius: 4px; }
@@ -62,21 +71,23 @@ body {
 #tune-btn { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); }
 
 .keys {
-  position: fixed; left: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  position: fixed; left: 16px; top: calc(env(safe-area-inset-top, 0px) + 58px);
   color: var(--muted); font-size: 12px; pointer-events: none;
 }
 .keys kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
 
-#intro, #win {
+#intro, #win, #dead {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(360px, calc(100% - 32px)); box-sizing: border-box;
   background: var(--glass); border: 1px solid var(--line); border-radius: 2px;
   padding: 20px 22px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   display: grid; gap: 10px;
 }
-#intro h1, #win h2 { margin: 0; font: 700 26px/1.05 var(--display); text-wrap: balance; }
-#intro p, #win p { margin: 0; color: var(--muted); }
+#intro h1, #win h2, #dead h2 { margin: 0; font: 700 26px/1.05 var(--display); text-wrap: balance; }
+#intro p, #win p, #dead p { margin: 0; color: var(--muted); }
 #intro .go { color: var(--ember); font-weight: 500; }
+#dead h2 { color: var(--hot); }
+#dead-time { font: 700 28px/1 var(--display); color: var(--muted); font-variant-numeric: tabular-nums; }
 #win-time { font: 700 34px/1 var(--display); color: var(--ember); font-variant-numeric: tabular-nums; }
 
 #panel {
@@ -123,6 +134,7 @@ body {
   .keys { display: none; }
 }
 @media (max-width: 560px) {
+  .vitals-box { --vs: 2; }
   #panel { top: auto; left: 0; width: 100%; max-height: 62%; border-left: 0; border-top: 1px solid var(--line); border-radius: 0; }
   .brand { display: none; }
   .hud { justify-content: flex-end; }
@@ -138,17 +150,20 @@ body {
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Biometric<small>Prototype 0.4 · Pump Yard</small></div>
+  <div class="brand">Biometric<small>Prototype 0.5 · Pump Yard</small></div>
   <div class="stats">
     <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Cells</span></div>
-    <div class="stat"><b id="hud-charges" class="charges">1</b><span>Charges</span></div>
-    <div class="stat"><b id="hud-kills">0 / 0</b><span>Spiders</span></div>
+    <div class="stat"><b id="hud-kills">0</b><span>Kills</span></div>
     <div class="stat"><b id="hud-time">0:00.00</b><span>Time</span></div>
     <div class="stat"><b id="hud-bpm">60</b><span id="hud-bpm-label">BPM</span></div>
     <div class="stat"><div id="hud-dash" class="ready"></div><span>Dash</span></div>
   </div>
 </div>
 
+<div class="vitals-box" aria-label="Vitals">
+  <canvas id="vitals" aria-hidden="true"></canvas>
+  <div class="vitals-cap"><span><span id="cap-hp">10 / 10</span> health</span><span><span id="cap-ch">10 / 30</span> charges</span></div>
+</div>
 <div class="keys"><kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>T</kbd> tune</div>
 <button class="btn" id="tune-btn" type="button" aria-expanded="false" aria-controls="panel">Tune</button>
 <button id="dash-btn" type="button">DASH</button>
@@ -156,10 +171,17 @@ body {
 
 <section id="intro">
   <h1>Biometric</h1>
-  <p>You are a small mechanical bug in a drowned pump yard. <span id="intro-count">Nine</span> battery cells lie in the rain. Collect them all as fast as you can.</p>
-  <p>Every dash burns one charge, and every cell you pick up gives one back. Dash straight through a spider to kill it.</p>
-  <p>Spiders are cowards alone. When two stand together an arc crackles between them and they lunge. A hit spikes your heat; too hot and you overheat.</p>
+  <p>You are a small mechanical bug in a drowned pump yard. <span id="intro-count">Fifteen</span> batteries lie in the rain. Collect them all as fast as you can.</p>
+  <p>Every dash burns one charge. A small cell gives 3, a big red battery 9. Dash straight through a spider to kill it.</p>
+  <p>Spiders crawl out of the vents. Alone they are cowards; two together crackle with an arc and lunge. Ten hits and you are done.</p>
   <p class="go">Press a move key or tap to start.</p>
+</section>
+
+<section id="dead" hidden>
+  <h2>Signal lost</h2>
+  <div id="dead-time" class="big-time">0:00.00</div>
+  <p id="dead-stats"></p>
+  <div class="actions"><button class="btn" id="again-dead" type="button">Try again (R)</button></div>
 </section>
 
 <section id="win" hidden>
@@ -208,7 +230,19 @@ const DEFAULT_PARAMS = {
   heatCool: 0.3,
   overheatRecover: 0.35, // overheated until heat cools to this
   overheatSpeed: 0.65, // top speed multiplier while overheated
-  startCharges: 1, // dash charges at the start; each battery cell adds one
+  startCharges: 10, // dash charges at the start
+  maxCharges: 30,
+  smallCharge: 3, // charges in a small battery cell
+  bigCharge: 9, // charges in a big red battery
+  maxHealth: 10,
+  hitDamage: 1,
+  ventFirstMin: 1.5, ventFirstMax: 3.5, // first spawn per vent, s
+  ventMin: 4, ventMax: 8, // spawn interval per vent, s
+  maxSpiders: 8, // alive at once
+  ventSafe: 1.5, // no spawn while the player is this close to the vent
+  emergeTime: 0.6,
+  spawnCooldown: 1.5, // attack cooldown of a freshly spawned spider
+  corpseTime: 12,
   critterRadius: 0.18,
   critterSpeed: 1.1,
   critterFleeSpeed: 3.2,
@@ -248,17 +282,20 @@ function parseLevel(level) {
   const solid = new Uint8Array(w * h);
   const shards = [];
   const critters = [];
+  const vents = [];
   let spawn = { x: w / 2, y: h / 2 };
   for (let ty = 0; ty < h; ty++) {
     for (let tx = 0; tx < w; tx++) {
       const c = rows[ty][tx] ?? '#';
       if (c === '#') solid[ty * w + tx] = 1;
       else if (c === 'P') spawn = { x: tx + 0.5, y: ty + 0.5 };
-      else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5, big: false });
+      else if (c === 'B') shards.push({ x: tx + 0.5, y: ty + 0.5, big: true });
+      else if (c === 'V') vents.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'b' || c === 's') critters.push({ x: tx + 0.5, y: ty + 0.5 });
     }
   }
-  return { name: level.name, w, h, solid, shards, critters, spawn };
+  return { name: level.name, w, h, solid, shards, critters, vents, spawn };
 }
 
 function isSolid(map, tx, ty) {
@@ -266,16 +303,28 @@ function isSolid(map, tx, ty) {
   return map.solid[ty * map.w + tx] === 1;
 }
 
+// A new spider. Spiders have ids because they come and go (vents, corpses).
+function makeSpider(state, x, y, extra = {}) {
+  const c = {
+    id: state.nextId++,
+    x, y, px: x, py: y, vx: 0, vy: 0,
+    dirX: 0, dirY: 0, timer: 0, fleeing: false,
+    alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
+    lungeX: 0, lungeY: 0, stateTime: 0, stateTotal: 0, deadTime: 0,
+    ...extra,
+  };
+  state.critters.push(c);
+  return c;
+}
+
 function createState(level, seed = 1, params = DEFAULT_PARAMS) {
   const map = parseLevel(level);
-  return {
+  const state = {
     seed: seed >>> 0,
-    critters: map.critters.map((c, i) => ({
-      x: c.x, y: c.y, px: c.x, py: c.y, vx: 0, vy: 0,
-      dirX: 0, dirY: 0, timer: 0.3 * i, fleeing: false,
-      alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
-      lungeX: 0, lungeY: 0, stateTime: 0,
-    })),
+    nextId: 1,
+    critters: [],
+    vents: [],
+    events: [], // drained by the browser; never read by the simulation
     kills: 0,
     hits: 0,
     map,
@@ -289,14 +338,22 @@ function createState(level, seed = 1, params = DEFAULT_PARAMS) {
       heat: 0, // 0..1, rises with each dash, cools over time
       overheated: false, // set when heat hits 1: no dash, slower
       charges: params.startCharges, // each dash spends one
+      health: params.maxHealth,
       stun: 0, invuln: 0,
     },
-    shards: map.shards.map((s) => ({ x: s.x, y: s.y, taken: false })),
+    shards: map.shards.map((s) => ({ x: s.x, y: s.y, big: s.big, taken: false })),
     collected: 0,
     time: 0,
     won: false,
+    dead: false,
     tick: 0,
   };
+  map.critters.forEach((c, i) => makeSpider(state, c.x, c.y, { timer: 0.3 * i }));
+  state.vents = map.vents.map((v) => ({
+    x: v.x, y: v.y,
+    timer: params.ventFirstMin + rand(state) * (params.ventFirstMax - params.ventFirstMin),
+  }));
+  return state;
 }
 
 function worldToScreen(x, y) {
@@ -388,6 +445,12 @@ function move(map, p, mv, dt, r) {
 // button went down.
 function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   const p = state.player;
+  if (state.dead) {
+    // Frozen: keep interpolation still, change nothing else.
+    p.px = p.x; p.py = p.y;
+    for (const c of state.critters) { c.px = c.x; c.py = c.y; }
+    return state;
+  }
   const r = params.radius;
   p.px = p.x; p.py = p.y;
 
@@ -453,15 +516,22 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     if (Math.hypot(s.x - p.x, s.y - p.y) <= reach) {
       s.taken = true;
       state.collected++;
-      p.charges++;
+      const gain = s.big ? params.bigCharge : params.smallCharge;
+      p.charges = Math.min(params.maxCharges, p.charges + gain);
+      state.events.push({ type: 'pickup', x: s.x, y: s.y, big: s.big });
     }
   }
 
+  stepVents(state, params, dt);
   stepSpiders(state, params, dt, dashing);
 
-  if (!state.won) {
+  if (!state.won && !state.dead) {
     state.time += dt;
-    if (state.collected === state.shards.length) state.won = true;
+    // A level without cells has no win condition (test rooms).
+    if (state.shards.length > 0 && state.collected === state.shards.length) {
+      state.won = true;
+      state.events.push({ type: 'win' });
+    }
   }
   state.tick++;
   return state;
@@ -492,12 +562,39 @@ function hitPlayer(state, c, params) {
   p.dashBuffer = 0;
   p.heat = Math.min(1, p.heat + params.hitHeat);
   if (p.heat >= 1) p.overheated = true;
+  p.health = Math.max(0, p.health - params.hitDamage);
   state.hits++;
+  state.events.push({ type: 'hit', x: p.x, y: p.y, health: p.health });
+  if (p.health <= 0 && !state.won) {
+    state.dead = true;
+    state.events.push({ type: 'death' });
+  }
 }
 
 function killSpider(state, c) {
-  c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0;
+  const p = state.player;
+  c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0; c.deadTime = 0;
   state.kills++;
+  state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX: p.dashX, dirY: p.dashY });
+}
+
+// Vents release a spider when their timer runs out, if there is room and
+// the player isn't standing on top of them.
+function stepVents(state, params, dt) {
+  const p = state.player;
+  for (const v of state.vents) {
+    v.timer -= dt;
+    if (v.timer > 0) continue;
+    const alive = state.critters.filter((c) => c.alive).length;
+    if (alive >= params.maxSpiders || dist(v, p) < params.ventSafe) { v.timer = 1; continue; }
+    const c = makeSpider(state, v.x, v.y, {
+      mode: 'emerge', stateTime: params.emergeTime, stateTotal: params.emergeTime,
+    });
+    const a = rand(state) * Math.PI * 2;
+    c.dirX = Math.cos(a); c.dirY = Math.sin(a);
+    state.events.push({ type: 'spawn', id: c.id, x: v.x, y: v.y });
+    v.timer = params.ventMin + rand(state) * (params.ventMax - params.ventMin);
+  }
 }
 
 // Spiders: alone they wander, flee, or walk to a partner. Two free spiders
@@ -509,17 +606,22 @@ function stepSpiders(state, params, dt, dashing) {
   const contact = params.radius + params.critterRadius;
   for (const c of state.critters) {
     c.px = c.x; c.py = c.y;
-    if (!c.alive) continue;
+    if (!c.alive) { c.deadTime += dt; continue; }
     c.cooldown = Math.max(0, c.cooldown - dt);
   }
+  // Old corpses leave the simulation (the renderer keeps a husk on the floor).
+  state.critters = state.critters.filter((c) => {
+    if (c.alive || c.deadTime < params.corpseTime) return true;
+    state.events.push({ type: 'corpse', id: c.id, x: c.x, y: c.y });
+    return false;
+  });
 
-  // Pair up, in index order so the result is deterministic.
-  state.critters.forEach((c, i) => {
+  // Pair up, in list order so the result is deterministic.
+  state.critters.forEach((c) => {
     if (!canPair(c) || dist(c, p) > params.aggroRange) return;
     const o = nearestPartner(state, c, params.pairRange);
     if (!o) return;
-    const j = state.critters.indexOf(o);
-    for (const [a, partner, role] of [[c, j, 0], [o, i, 1]]) {
+    for (const [a, partner, role] of [[c, o.id, 0], [o, c.id, 1]]) {
       a.mode = 'windup'; a.stateTime = params.windup; a.stateTotal = params.windup;
       a.partner = partner; a.role = role; a.hitDone = false;
     }
@@ -531,7 +633,10 @@ function stepSpiders(state, params, dt, dashing) {
     const d = Math.hypot(dx, dy) || 1;
     let tx = 0, ty = 0, accel = params.critterAccel;
 
-    if (c.mode === 'windup') {
+    if (c.mode === 'emerge') {
+      c.stateTime -= dt;
+      if (c.stateTime <= 0) { c.mode = 'wander'; c.cooldown = params.spawnCooldown; c.timer = 0; }
+    } else if (c.mode === 'windup') {
       c.dirX = -dx / d; c.dirY = -dy / d; // face the player
       c.stateTime -= dt;
       if (c.stateTime <= 0) {
@@ -591,7 +696,7 @@ function stepSpiders(state, params, dt, dashing) {
     }
 
     if (c.mode !== 'lunge') {
-      if (c.mode === 'windup' || c.mode === 'thrown') { tx = 0; ty = 0; }
+      if (c.mode === 'windup' || c.mode === 'thrown' || c.mode === 'emerge') { tx = 0; ty = 0; }
       [c.vx, c.vy] = approach(c.vx, c.vy, tx, ty, accel * dt);
     }
     const want = Math.hypot(c.vx, c.vy);
@@ -626,31 +731,44 @@ function wallClearance(state, r, p = state.player) {
 }
 
 // ---- src/levels.js
-// Level legend: '#' wall, '.' floor, 'P' player spawn, '*' battery cell, 'b' or 's' spider.
+// Level legend: '#' wall, '.' floor, 'P' player spawn, '*' battery cell (+3),
+// 'B' big red battery (+9), 'V' vent (spawns spiders), 'b' or 's' spider.
 const LEVELS = [
   {
     name: 'Pump Yard',
     map: [
-      '####################',
-      '#........#.......b.#',
-      '#..*.....#.....*...#',
-      '#........#.........#',
-      '#...##.......##....#',
-      '#...##.......##..*.#',
-      '#.....b............#',
-      '####..####..####..##',
-      '#..................#',
-      '#.*....#....#...b..#',
-      '#......#.P..#....*.#',
-      '#......#....#......#',
-      '#..######..######..#',
-      '#..........b.......#',
-      '#....*........#....#',
-      '#.......b.....#..*.#',
-      '###...####....#....#',
-      '#..b......#........#',
-      '#...*.....#....*...#',
-      '####################',
+      '################################',
+      '#..............................#',
+      '#..............................#',
+      '#..V........................V..#',
+      '#.........#....##.........###..#',
+      '#.....*........##..............#',
+      '#...B..........................#',
+      '#......##......*.......##......#',
+      '#......##.........V....##......#',
+      '#........*............*........#',
+      '#...................#.......#..#',
+      '#....*..............#..........#',
+      '#..........####.....#..........#',
+      '#.........................*....#',
+      '#..............P...............#',
+      '#...##.............*...........#',
+      '#...##..........#.........##...#',
+      '#..........*..............##...#',
+      '#..............................#',
+      '#...........#.....####.........#',
+      '#...........#...............B..#',
+      '#...#.......#..................#',
+      '#........*............*........#',
+      '#......##..............##......#',
+      '#......##..............##......#',
+      '#............*...........*.....#',
+      '#..#...........................#',
+      '#..#...........##....#.........#',
+      '#..V...........##...........V..#',
+      '#................B.............#',
+      '#..............................#',
+      '################################',
     ],
   },
 ];
@@ -943,6 +1061,7 @@ const COLORS = {
   cell0: '#8f9a2a', cell1: '#c8d43c', cell2: '#f4f7a0',
   elec0: '#2fa6c8', elec1: '#6fe6ff', elec2: '#d2fbff',
   hot0: '#c2412b', hot1: '#ff7a3c',
+  blood0: '#3a0c10', blood1: '#7a1418', blood2: '#b8262a',
   hull0: '#6b6a64', hull1: '#a19d90', hull2: '#d1cbbb',
   limb: '#101315',
   beetleA0: '#2a3318', beetleA1: '#4a5a24',
@@ -993,6 +1112,114 @@ function quantize(data, width, height, table, dither = 0) {
     }
   }
   return data;
+}
+
+// ---- src/vitals.js
+// Vitals panel: health and charges as a biomechanical pixel-art sprite in the
+// spirit of H. R. Giger (bone vertebrae, ribs, black tubing, an organ that
+// beats). Drawn pixel by pixel at 132 x 40 and scaled up without smoothing,
+// so its pixels stay crisp whatever the zoom of the world.
+
+const VITALS_W = 132;
+const VITALS_H = 40;
+const VC = COLORS;
+
+function createVitals(canvas) {
+  canvas.width = VITALS_W;
+  canvas.height = VITALS_H;
+  const g = canvas.getContext('2d');
+  const px = (x, y, c, w = 1, h = 1) => { g.fillStyle = c; g.fillRect(x, y, w, h); };
+
+  function tube(x0, x1, y) {
+    px(x0, y - 1, VC.limb, x1 - x0, 3);
+    px(x0, y - 1, VC.metal1, x1 - x0, 1);
+    for (let x = x0 + 1; x < x1; x += 4) px(x, y + 1, VC.void2); // ribbed hose
+  }
+
+  // One vertebra holding a blood capsule. full: 0 lost, 1 full.
+  function vertebra(x, y, full, flash, t, i, low) {
+    // Spinous processes top and bottom.
+    px(x + 3, y - 2, VC.hull1, 2, 2); px(x + 4, y - 3, VC.hull2);
+    px(x + 3, y + 12, VC.hull1, 2, 2); px(x + 4, y + 14, VC.hull0);
+    // Body with chipped corners.
+    px(x, y + 1, VC.hull1, 8, 10); px(x + 1, y, VC.hull1, 6, 1); px(x + 1, y + 11, VC.hull0, 6, 1);
+    px(x, y + 1, VC.hull2, 1, 9); px(x + 7, y + 2, VC.hull0, 1, 9);
+    // Ribs reaching into the gap.
+    px(x + 8, y + 3, VC.hull0); px(x + 9, y + 4, VC.hull0); px(x + 8, y + 8, VC.hull0); px(x + 9, y + 7, VC.hull0);
+    // Capsule.
+    px(x + 2, y + 2, VC.void0, 4, 8);
+    if (flash) { px(x + 2, y + 2, VC.bone, 4, 8); return; }
+    if (full) {
+      const wob = low ? Math.round(Math.sin(t * 8 + i) * 0.8) : 0;
+      px(x + 2, y + 3 + Math.max(0, wob), VC.blood1, 4, 7 - Math.max(0, wob));
+      px(x + 2, y + 3, VC.blood2, 1, 7);
+      px(x + 3 + (Math.floor(t * 3 + i) % 3), y + 3, VC.hot1); // meniscus glint
+    } else {
+      px(x + 3, y + 4, VC.hull0); px(x + 4, y + 5, VC.hull0); px(x + 3, y + 6, VC.hull0); px(x + 4, y + 8, VC.hull0);
+      px(x + 2, y + 9, VC.blood0, 4, 1); // dried residue
+    }
+  }
+
+  // One housing of three cell slots. n: how many of its 3 slots are charged.
+  function housing(x, y, n, empty) {
+    px(x, y, VC.hull0, 8, 15); px(x + 1, y - 1, VC.hull0, 6, 1);
+    px(x, y, VC.hull1, 1, 14); px(x + 7, y + 1, VC.metal1, 1, 14);
+    px(x + 3, y + 15, VC.hull0, 2, 2); // a little tail joint
+    for (let s = 0; s < 3; s++) {
+      const sy = y + 10 - s * 4; // fill from the bottom up
+      px(x + 2, sy, VC.void0, 4, 3);
+      if (s < n) {
+        px(x + 2, sy, VC.cell1, 4, 3);
+        px(x + 2, sy, VC.cell2, 4, 1);
+      } else if (empty) {
+        px(x + 3, sy + 1, VC.void2, 2, 1);
+      }
+    }
+  }
+
+  function organ(t, bpm, charges, overheated) {
+    // Elongated, ribbed cranium-like capsule.
+    g.fillStyle = VC.hull0;
+    g.beginPath(); g.ellipse(11, 20, 10, 18, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = VC.hull1;
+    g.beginPath(); g.ellipse(10, 19, 9, 17, 0, 0, Math.PI * 2); g.fill();
+    for (let y = 5; y < 36; y += 3) px(3 + Math.abs(20 - y) / 4, y, VC.hull0, 14 - Math.abs(20 - y) / 2, 1);
+    g.fillStyle = VC.void0;
+    g.beginPath(); g.ellipse(11, 20, 5, 10, 0, 0, Math.PI * 2); g.fill();
+    const dead = charges <= 0;
+    // Heart: two quick beats per cycle, at the bug's pulse.
+    const ph = (t * bpm / 60) % 1;
+    const beat = dead ? 0 : Math.max(Math.exp(-ph * 14), 0.7 * Math.exp(-Math.abs(ph - 0.22) * 18));
+    const r = 2 + beat * 2.5;
+    g.fillStyle = dead ? VC.blood0 : overheated ? VC.hot0 : VC.blood1;
+    g.beginPath(); g.ellipse(11, 21, r, r * 1.3, 0, 0, Math.PI * 2); g.fill();
+    if (!dead) {
+      g.fillStyle = beat > 0.5 ? VC.hot1 : VC.blood2;
+      g.beginPath(); g.ellipse(10.5, 20, r * 0.45, r * 0.6, 0, 0, Math.PI * 2); g.fill();
+    }
+    // Vessels running into the socket.
+    px(11, 9, VC.limb, 1, 5); px(11, 28, VC.limb, 1, 5);
+  }
+
+  // v: { health, maxHealth, charges, maxCharges, bpm, overheated, flash (s), t }
+  function draw(v) {
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, VITALS_W, VITALS_H);
+    tube(18, VITALS_W - 2, 10);
+    tube(18, VITALS_W - 2, 30);
+    organ(v.t, v.bpm, v.charges, v.overheated);
+    const low = v.health <= 3;
+    for (let i = 0; i < v.maxHealth; i++) {
+      vertebra(26 + i * 10, 4, i < v.health, v.flash > 0 && i < v.health, v.t, i, low);
+    }
+    const housings = Math.ceil(v.maxCharges / 3);
+    for (let i = 0; i < housings; i++) {
+      const n = Math.max(0, Math.min(3, v.charges - i * 3));
+      housing(26 + i * 10, 22, n, v.charges <= 0);
+    }
+  }
+
+  return { draw };
 }
 
 // ---- src/render.js
@@ -1203,7 +1430,32 @@ function createRenderer(canvas) {
   }
 
   // ---- batteries -----------------------------------------------------------
+  // Big red battery: worth three small cells, and looks it.
+  function drawBigCell(s, t) {
+    const X = sx(s.x, s.y), Y = sy(s.x, s.y);
+    const seed = s.x * 3.1 + s.y * 7.7;
+    ctx.fillStyle = C.void1;
+    ctx.beginPath(); ctx.ellipse(X, Y, 12, 6, 0, 0, Math.PI * 2); ctx.fill();
+    const top = Y - 24;
+    ctx.fillStyle = C.blood1; ctx.fillRect(X - 7, top, 14, 24);
+    ctx.fillStyle = C.blood2; ctx.fillRect(X - 7, top, 4, 24);
+    ctx.fillStyle = C.blood0; ctx.fillRect(X + 4, top, 3, 24);
+    ctx.fillStyle = C.void1; ctx.fillRect(X - 7, top + 9, 14, 6);
+    ctx.fillStyle = C.metal4;
+    ctx.beginPath(); ctx.ellipse(X, top, 7, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(X - 4, top - 4, 3, 4); ctx.fillRect(X + 1, top - 4, 3, 4);
+    // Three charge pips, lighting up in turn.
+    const step = Math.floor((t * 2 + seed) % 4);
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = i < step ? C.hot1 : C.blood0;
+      ctx.fillRect(X - 5 + i * 4, top + 11, 2, 2);
+    }
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3 + seed);
+    lights.push({ x: X, y: Y - 12, r: 55 + pulse * 10, color: C.hot1, glow: 0.3 + pulse * 0.15 });
+  }
+
   function drawCell(s, t) {
+    if (s.big) { drawBigCell(s, t); return; }
     const X = sx(s.x, s.y), Y = sy(s.x, s.y);
     const seed = s.x * 3.1 + s.y * 7.7;
     ctx.fillStyle = C.void1;
@@ -1289,7 +1541,12 @@ function createRenderer(canvas) {
     ctx.moveTo(...P3(x + c * 0.2 * k, y + s * 0.2 * k, z + 0.01));
     ctx.lineTo(...P3(x - c * 0.24 * k, y - s * 0.24 * k, z + 0.01));
     ctx.stroke();
-    if (style.led != null) {
+    if (style.led != null && style.empty) {
+      // Out of charges: the light is dead, not blinking.
+      const [lx, ly] = P3(x - c * 0.12 * k, y - s * 0.12 * k, z + 0.02);
+      ctx.fillStyle = C.void2;
+      ctx.beginPath(); ctx.arc(lx, ly, px(3), 0, Math.PI * 2); ctx.fill();
+    } else if (style.led != null) {
       // Heartbeat light: faster and hotter with core heat; stutters when overheated.
       const bpm = 60 + style.led * 120;
       const ph = (rig.time * bpm / 60) % 1;
@@ -1308,7 +1565,9 @@ function createRenderer(canvas) {
     ctx.fillStyle = style.shell; ctx.fill();
     if (style.led != null) {
       ellipsePath(hx + c * 0.06 * k, hy + s * 0.06 * k, z + 0.07 * k, hd, 0.045 * k, 0.07 * k);
-      ctx.fillStyle = C.elec1; ctx.fill();
+      ctx.fillStyle = style.empty ? C.void2 : C.elec1; ctx.fill();
+    }
+    if (style.led != null && !style.empty) {
       // Head lamp: a soft pool of light ahead of the bug.
       const [ex, ey] = P3(hx + c * 0.6, hy + s * 0.6, 0);
       lights.push({ x: ex, y: ey, r: 85, color: C.elec1, glow: 0.08 });
@@ -1331,6 +1590,19 @@ function createRenderer(canvas) {
   // Spider: big abdomen behind, small thorax in front, eight legs, a row of
   // eyes that glow hot while it winds up and lunges.
   function drawSpider(rig, c, i, t) {
+    if (c.mode === 'emerge') {
+      // Crawling out of the vent: fades in as it rises.
+      const prog = 1 - c.stateTime / Math.max(1e-6, c.stateTotal);
+      ctx.save(); ctx.globalAlpha = Math.max(0.05, prog);
+      ctx.translate(0, (1 - prog) * 8);
+      drawSpiderBody(rig, c, i, t);
+      ctx.restore();
+      return;
+    }
+    drawSpiderBody(rig, c, i, t);
+  }
+
+  function drawSpiderBody(rig, c, i, t) {
     const o = rig.opts, k = o.scale, hd = rig.heading;
     const cs = Math.cos(hd), sn = Math.sin(hd);
     const { x, y } = rig.pos;
@@ -1395,6 +1667,109 @@ function createRenderer(canvas) {
       ctx.lineTo(x1, y1); ctx.stroke();
     }
     lights.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, r: 40 + charge * 30, color: C.elec1, glow: 0.25 + charge * 0.3 });
+  }
+
+  // ---- vents ---------------------------------------------------------------
+  function drawVent(v, t, dt) {
+    const tx = Math.floor(v.x), ty = Math.floor(v.y);
+    diamond(tx, ty, 0, 0.12);
+    ctx.fillStyle = C.void0; ctx.fill();
+    ctx.strokeStyle = C.metal3; ctx.lineWidth = px(1.5); ctx.stroke();
+    // Slats.
+    ctx.strokeStyle = C.metal1; ctx.lineWidth = px(2);
+    for (let i = 1; i < 5; i++) {
+      const k = 0.12 + (i / 5) * 0.76;
+      ctx.beginPath();
+      ctx.moveTo(sx(tx + 0.18, ty + k), sy(tx + 0.18, ty + k));
+      ctx.lineTo(sx(tx + 0.82, ty + k), sy(tx + 0.82, ty + k));
+      ctx.stroke();
+    }
+    // Something red breathes down there.
+    const glow = 0.5 + 0.5 * Math.sin(t * 1.7 + v.x);
+    lights.push({ x: sx(v.x, v.y), y: sy(v.x, v.y), r: 34, color: C.blood2, glow: 0.12 + glow * 0.12 });
+    if (Math.random() < dt * 1.5) ventPuff(v, 1);
+  }
+
+  function ventPuff(v, n = 10) {
+    const X = sx(v.x, v.y), Y = sy(v.x, v.y);
+    for (let i = 0; i < n; i++) {
+      fx.particles.push({
+        x: X + (Math.random() - 0.5) * 24, y: Y - 2, vx: (Math.random() - 0.5) * 20, vy: -20 - Math.random() * 25,
+        life: 1, fade: 0.9 + Math.random() * 0.6, grav: -8, color: i % 3 ? C.metal3 : C.metal4, size: 3,
+      });
+    }
+  }
+
+  // ---- blood layer ---------------------------------------------------------
+  // World-pixel canvas under everything that stands on the floor. Splatters
+  // are generated once, when the kill happens, and stay for the run.
+  const decal = { canvas: null, ctx: null, map: null, x0: 0, y0: 0, w: 0, h: 0, k: 0.5 };
+
+  function resetDecals(map) {
+    decal.map = map;
+    decal.x0 = -map.h * HW; decal.y0 = -HH;
+    decal.w = (map.w + map.h) * HW; decal.h = (map.w + map.h) * HH + HH * 2;
+    decal.canvas = document.createElement('canvas');
+    decal.canvas.width = Math.ceil(decal.w * decal.k);
+    decal.canvas.height = Math.ceil(decal.h * decal.k);
+    decal.ctx = decal.canvas.getContext('2d');
+    decal.ctx.setTransform(decal.k, 0, 0, decal.k, -decal.x0 * decal.k, -decal.y0 * decal.k);
+  }
+
+  // A circle of radius r tiles lying on the floor.
+  function floorDot(g, x, y, r, color) {
+    g.fillStyle = color;
+    g.beginPath(); g.ellipse(sx(x, y), sy(x, y), r * Math.SQRT2 * HW, r * Math.SQRT2 * HH, 0, 0, Math.PI * 2); g.fill();
+  }
+
+  function bloodSplatter(map, x, y, dirX, dirY) {
+    if (decal.map !== map) resetDecals(map);
+    const g = decal.ctx;
+    const open = (px2, py2) => !isSolid(map, Math.floor(px2), Math.floor(py2));
+    const rnd = Math.random;
+    const gauss = () => (rnd() + rnd() + rnd() - 1.5) / 1.5;
+    const aim = Math.hypot(dirX, dirY) > 0.1 ? Math.atan2(dirY, dirX) : rnd() * Math.PI * 2;
+    // Pool where it died.
+    for (let i = 0; i < 5; i++) {
+      const px2 = x + gauss() * 0.12, py2 = y + gauss() * 0.12;
+      if (open(px2, py2)) floorDot(g, px2, py2, 0.08 + rnd() * 0.14, i < 2 ? C.blood0 : C.blood1);
+    }
+    // Streaks thrown along the dash.
+    g.lineCap = 'round';
+    for (let i = 0; i < 6; i++) {
+      const a = aim + gauss() * 0.35, len = 0.3 + rnd() * 0.8;
+      const ex = x + Math.cos(a) * len, ey = y + Math.sin(a) * len;
+      if (!open(ex, ey)) continue;
+      g.strokeStyle = rnd() < 0.3 ? C.blood2 : C.blood1;
+      g.lineWidth = 2 + rnd() * 3;
+      g.beginPath(); g.moveTo(sx(x, y), sy(x, y)); g.lineTo(sx(ex, ey), sy(ex, ey)); g.stroke();
+    }
+    // Droplets: most land close, a few fly far; smaller the further they go.
+    // Sized so even small drops survive the pixel filter (>= ~1 art pixel).
+    const n = 22 + Math.floor(rnd() * 14);
+    for (let i = 0; i < n; i++) {
+      const a = aim + gauss() * 0.9;
+      const d = Math.min(2.4, 0.2 - Math.log(1 - rnd() * 0.98) * 0.55);
+      const px2 = x + Math.cos(a) * d, py2 = y + Math.sin(a) * d;
+      if (!open(px2, py2)) continue;
+      const r = Math.max(0.03, 0.09 - d * 0.03) * (0.6 + rnd() * 0.8);
+      floorDot(g, px2, py2, r, rnd() < 0.25 ? C.blood2 : C.blood1);
+    }
+  }
+
+  // When a corpse leaves the simulation, its dried husk stays on the floor.
+  function bakeHusk(map, x, y) {
+    if (decal.map !== map) resetDecals(map);
+    const g = decal.ctx, hd = Math.random() * Math.PI * 2;
+    floorDot(g, x - Math.cos(hd) * 0.06, y - Math.sin(hd) * 0.06, 0.11, C.void2);
+    floorDot(g, x + Math.cos(hd) * 0.06, y + Math.sin(hd) * 0.06, 0.06, C.void1);
+    g.strokeStyle = C.void1; g.lineWidth = 1.5;
+    for (let i = 0; i < 8; i++) {
+      const a = hd + (i / 8) * Math.PI * 2 + 0.2;
+      const mx = x + Math.cos(a) * 0.14, my = y + Math.sin(a) * 0.14;
+      const ex = x + Math.cos(a + 0.5) * 0.1, ey = y + Math.sin(a + 0.5) * 0.1;
+      g.beginPath(); g.moveTo(sx(x, y), sy(x, y)); g.quadraticCurveTo(sx(mx, my), sy(mx, my), sx(ex, ey), sy(ex, ey)); g.stroke();
+    }
   }
 
   // ---- particles & weather --------------------------------------------------
@@ -1518,6 +1893,12 @@ function createRenderer(canvas) {
     for (let ty = 0; ty < map.h; ty++) {
       for (let tx = 0; tx < map.w; tx++) if (!isSolid(map, tx, ty)) drawFloor(tx, ty, t);
     }
+    for (const v of state.vents) drawVent(v, t, dt);
+    // Blood and husks, baked into their own layer as they happen.
+    if (decal.canvas && decal.map === map) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(decal.canvas, decal.x0, decal.y0, decal.w, decal.h);
+    }
 
     // Dash afterimage on the floor.
     const pr = rigs.player;
@@ -1532,7 +1913,10 @@ function createRenderer(canvas) {
       for (let tx = 0; tx < map.w; tx++) if (isSolid(map, tx, ty)) items.push({ d: tx + ty + 1, k: 0, tx, ty });
     }
     for (const s of state.shards) if (!s.taken) items.push({ d: s.x + s.y, k: 1, s });
-    rigs.critters.forEach((rig, i) => items.push({ d: rig.pos.x + rig.pos.y - (state.critters[i].alive ? 0 : 0.5), k: 3, rig, i, c: state.critters[i] }));
+    for (const c of state.critters) {
+      const rig = rigs.critters.get(c.id);
+      if (rig) items.push({ d: rig.pos.x + rig.pos.y - (c.alive ? 0 : 0.5), k: 3, rig, i: c.id, c });
+    }
     const pd = pr.pos.x + pr.pos.y;
     items.push({ d: pd, k: 2 });
     items.sort((a, b) => a.d - b.d || a.k - b.k);
@@ -1542,19 +1926,22 @@ function createRenderer(canvas) {
       else if (it.k === 1) drawCell(it.s, t);
       else if (it.k === 3) drawSpider(it.rig, it.c, it.i, t);
       else {
+        const empty = p.charges <= 0;
         drawBug(pr, {
-          shell: C.hull1, shade: C.hull0, limb: C.limb, legW: 3, led: p.heat, overheated: p.overheated,
+          shell: empty ? C.hull0 : C.hull1, shade: empty ? C.metal1 : C.hull0, limb: C.limb,
+          legW: 3, led: p.heat, overheated: p.overheated, empty,
         }, t);
       }
     }
 
     // Pairs charging an attack are linked by a crackling arc.
-    state.critters.forEach((c, i) => {
-      if (!c.alive || c.mode !== 'windup' || c.role !== 0) return;
-      const o = state.critters[c.partner];
-      if (!o || !o.alive) return;
-      drawArc(rigs.critters[i], rigs.critters[c.partner], t, 1 - c.stateTime / Math.max(1e-6, c.stateTotal));
-    });
+    for (const c of state.critters) {
+      if (!c.alive || c.mode !== 'windup' || c.role !== 0) continue;
+      const o = state.critters.find((q) => q.id === c.partner);
+      const ra = rigs.critters.get(c.id), rb = o && rigs.critters.get(o.id);
+      if (!o || !o.alive || !ra || !rb) continue;
+      drawArc(ra, rb, t, 1 - c.stateTime / Math.max(1e-6, c.stateTotal));
+    }
 
     // Outline on top so the player stays visible behind walls.
     ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight, pr.heading, 0.26, 0.16);
@@ -1610,7 +1997,9 @@ function createRenderer(canvas) {
   }
 
   return {
-    resize, draw, burst, hitFx, splat, updateFx,
+    resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals,
+    ventPuff: (v) => ventPuff(v, 14),
+    bigBurst: (x, y) => { burst(x, y); burst(x, y); },
     screenOf: (x, y) => ({ x: sx(x, y), y: sy(x, y) }),
     get size() { return { w, h }; },
   };
@@ -1684,11 +2073,22 @@ function start(snapshot) {
     const p = state.player;
     rigs = {
       player: createRig(p.x, p.y, Math.atan2(p.faceY, p.faceX), { ...rigOpts }),
-      critters: state.critters.map((c, i) => createRig(c.x, c.y, i * 1.3, SPIDER_RIG)),
+      critters: new Map(), // by spider id; spiders come and go
     };
+    syncSpiderRigs();
+    renderer.resetDecals(state.map);
+  }
+  function syncSpiderRigs() {
+    const ids = new Set();
+    for (const c of state.critters) {
+      ids.add(c.id);
+      if (!rigs.critters.has(c.id)) rigs.critters.set(c.id, createRig(c.x, c.y, Math.atan2(c.dirY, c.dirX) || c.id * 1.3, SPIDER_RIG));
+    }
+    for (const id of rigs.critters.keys()) if (!ids.has(id)) rigs.critters.delete(id);
   }
   makeRigs();
-  let collectedSeen = 0, hitsSeen = 0, shake = 0;
+  let shake = 0, vitalsFlash = 0;
+  const vitals = createVitals($('vitals'));
   let started = false;
 
   function centreCamera() {
@@ -1697,10 +2097,10 @@ function start(snapshot) {
   }
   function restart() {
     state = createState(LEVELS[levelIndex], (Date.now() >>> 0) || 1);
-    collectedSeen = 0; hitsSeen = 0;
     makeRigs();
     centreCamera();
     $('win').hidden = true;
+    $('dead').hidden = true;
   }
 
   // ---- input -------------------------------------------------------------
@@ -1926,7 +2326,7 @@ function start(snapshot) {
   }
 
   // ---- HUD ---------------------------------------------------------------
-  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudCharges = $('hud-charges'), hudKills = $('hud-kills'), hudBpmLabel = $('hud-bpm-label');
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudKills = $('hud-kills'), capHp = $('cap-hp'), capCh = $('cap-ch'), hudBpmLabel = $('hud-bpm-label');
   const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
   function updateHud() {
     hudShards.textContent = `${state.collected} / ${state.shards.length}`;
@@ -1937,9 +2337,10 @@ function start(snapshot) {
     const canDash = pl.dashCooldown <= 0 && !pl.overheated && pl.charges > 0;
     hudDash.classList.toggle('ready', canDash);
     hudDash.classList.toggle('blocked', pl.overheated || pl.charges === 0);
-    hudCharges.textContent = String(pl.charges);
-    hudCharges.classList.toggle('empty', pl.charges === 0);
-    hudKills.textContent = `${state.kills} / ${state.critters.length}`;
+    hudKills.textContent = String(state.kills);
+    capHp.textContent = `${pl.health} / ${params.maxHealth}`;
+    capCh.textContent = `${pl.charges} / ${params.maxCharges}`;
+    capCh.classList.toggle('empty', pl.charges === 0);
     const bpm = Math.round(60 + state.player.heat * 120);
     hudBpm.textContent = state.player.overheated ? 'HOT' : String(bpm);
     hudBpm.classList.toggle('hot', state.player.heat > 0.5);
@@ -1955,8 +2356,30 @@ function start(snapshot) {
     $('win').hidden = false;
   }
   $('again').addEventListener('click', () => { restart(); begin(); });
+  $('again-dead').addEventListener('click', () => { restart(); begin(); });
+  function onDeath() {
+    $('dead-time').textContent = fmtTime(state.time);
+    $('dead-stats').textContent = `${state.collected} of ${state.shards.length} cells, ${state.kills} spiders killed.`;
+    $('dead').hidden = false;
+  }
 
-  const WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve'];
+  // The simulation reports what happened; turn it into effects here.
+  const eventLog = []; // last events, readable through #debug
+  function drainEvents(ix, iy) {
+    for (const e of state.events) {
+      eventLog.push(e); if (eventLog.length > 50) eventLog.shift();
+      if (e.type === 'pickup') { if (e.big) renderer.bigBurst(e.x, e.y); else renderer.burst(e.x, e.y); }
+      else if (e.type === 'kill') { renderer.splat(e.x, e.y); renderer.bloodSplatter(state.map, e.x, e.y, e.dirX, e.dirY); }
+      else if (e.type === 'hit') { renderer.hitFx(ix, iy); shake = 0.25; vitalsFlash = 0.2; }
+      else if (e.type === 'spawn') renderer.ventPuff({ x: e.x, y: e.y });
+      else if (e.type === 'corpse') renderer.bakeHusk(state.map, e.x, e.y);
+      else if (e.type === 'win') onWin();
+      else if (e.type === 'death') onDeath();
+    }
+    state.events.length = 0;
+  }
+
+  const WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen', 'Twenty'];
   $('intro-count').textContent = WORDS[state.shards.length] ?? String(state.shards.length);
 
   // ---- loop --------------------------------------------------------------
@@ -1978,25 +2401,16 @@ function start(snapshot) {
       acc += dt;
       let input = readInput();
       while (acc >= STEP) {
-        const wasWon = state.won;
         step(state, input, params);
         input = { ...input, dash: false }; // a press counts once
         acc -= STEP;
-        if (!wasWon && state.won) onWin();
       }
     }
     view.alpha = started ? acc / STEP : 1;
     const p = state.player;
     const ix = p.px + (p.x - p.px) * view.alpha, iy = p.py + (p.y - p.py) * view.alpha;
-    while (collectedSeen < state.collected) {
-      const s = state.shards.find((q) => q.taken && !q.burst);
-      if (s) { s.burst = true; renderer.burst(s.x, s.y); }
-      collectedSeen++;
-    }
-    if (state.hits > hitsSeen) { hitsSeen = state.hits; renderer.hitFx(ix, iy); shake = 0.25; }
-    state.critters.forEach((c) => {
-      if (!c.alive && !c.splatted) { c.splatted = true; renderer.splat(c.x, c.y); }
-    });
+    drainEvents(ix, iy);
+    syncSpiderRigs();
     renderer.updateFx(dt, p, ix, iy, rigs.player);
     // Animation runs on real frame time; the follower clamps itself on long frames.
     const adt = Math.min(dt, 0.1);
@@ -2007,10 +2421,15 @@ function start(snapshot) {
       bodyZeta: rigOpts.bodyZeta * (1 - 0.6 * p.heat),
     });
     updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy }, blocked);
-    state.critters.forEach((c, i) => {
-      if (!c.alive) return; // corpses stay where they fell
+    for (const c of state.critters) {
+      if (!c.alive) continue; // corpses stay where they fell
       const cx = c.px + (c.x - c.px) * view.alpha, cy = c.py + (c.y - c.py) * view.alpha;
-      updateRig(rigs.critters[i], adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, blocked);
+      updateRig(rigs.critters.get(c.id), adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, blocked);
+    }
+    vitalsFlash = Math.max(0, vitalsFlash - dt);
+    vitals.draw({
+      health: p.health, maxHealth: params.maxHealth, charges: p.charges, maxCharges: params.maxCharges,
+      bpm: 60 + p.heat * 120, overheated: p.overheated, flash: vitalsFlash, t: clock,
     });
     // Camera eases toward the player; lag is the time constant in seconds.
     const target = renderer.screenOf(ix, iy);
@@ -2028,7 +2447,7 @@ function start(snapshot) {
 
   window.claude?.hot?.snapshot?.(() => ({ tune: tuneData() }));
   // Test hook: open the page with #debug to reach the live state from a script.
-  if (location.hash === '#debug') window.biometricDebug = { get state() { return state; }, params, look, view };
+  if (location.hash === '#debug') window.biometricDebug = { get state() { return state; }, params, look, view, events: eventLog };
 }
 
 const hot = window.claude?.hot;

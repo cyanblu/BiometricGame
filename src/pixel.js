@@ -15,6 +15,7 @@ export const COLORS = {
   cell0: '#8f9a2a', cell1: '#c8d43c', cell2: '#f4f7a0',
   elec0: '#2fa6c8', elec1: '#6fe6ff', elec2: '#d2fbff',
   hot0: '#c2412b', hot1: '#ff7a3c',
+  blood0: '#3a0c10', blood1: '#7a1418', blood2: '#b8262a',
   hull0: '#6b6a64', hull1: '#a19d90', hull2: '#d1cbbb',
   limb: '#101315',
   beetleA0: '#2a3318', beetleA1: '#4a5a24',

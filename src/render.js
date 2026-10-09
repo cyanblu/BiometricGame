@@ -208,7 +208,32 @@ export function createRenderer(canvas) {
   }
 
   // ---- batteries -----------------------------------------------------------
+  // Big red battery: worth three small cells, and looks it.
+  function drawBigCell(s, t) {
+    const X = sx(s.x, s.y), Y = sy(s.x, s.y);
+    const seed = s.x * 3.1 + s.y * 7.7;
+    ctx.fillStyle = C.void1;
+    ctx.beginPath(); ctx.ellipse(X, Y, 12, 6, 0, 0, Math.PI * 2); ctx.fill();
+    const top = Y - 24;
+    ctx.fillStyle = C.blood1; ctx.fillRect(X - 7, top, 14, 24);
+    ctx.fillStyle = C.blood2; ctx.fillRect(X - 7, top, 4, 24);
+    ctx.fillStyle = C.blood0; ctx.fillRect(X + 4, top, 3, 24);
+    ctx.fillStyle = C.void1; ctx.fillRect(X - 7, top + 9, 14, 6);
+    ctx.fillStyle = C.metal4;
+    ctx.beginPath(); ctx.ellipse(X, top, 7, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(X - 4, top - 4, 3, 4); ctx.fillRect(X + 1, top - 4, 3, 4);
+    // Three charge pips, lighting up in turn.
+    const step = Math.floor((t * 2 + seed) % 4);
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = i < step ? C.hot1 : C.blood0;
+      ctx.fillRect(X - 5 + i * 4, top + 11, 2, 2);
+    }
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3 + seed);
+    lights.push({ x: X, y: Y - 12, r: 55 + pulse * 10, color: C.hot1, glow: 0.3 + pulse * 0.15 });
+  }
+
   function drawCell(s, t) {
+    if (s.big) { drawBigCell(s, t); return; }
     const X = sx(s.x, s.y), Y = sy(s.x, s.y);
     const seed = s.x * 3.1 + s.y * 7.7;
     ctx.fillStyle = C.void1;
@@ -294,7 +319,12 @@ export function createRenderer(canvas) {
     ctx.moveTo(...P3(x + c * 0.2 * k, y + s * 0.2 * k, z + 0.01));
     ctx.lineTo(...P3(x - c * 0.24 * k, y - s * 0.24 * k, z + 0.01));
     ctx.stroke();
-    if (style.led != null) {
+    if (style.led != null && style.empty) {
+      // Out of charges: the light is dead, not blinking.
+      const [lx, ly] = P3(x - c * 0.12 * k, y - s * 0.12 * k, z + 0.02);
+      ctx.fillStyle = C.void2;
+      ctx.beginPath(); ctx.arc(lx, ly, px(3), 0, Math.PI * 2); ctx.fill();
+    } else if (style.led != null) {
       // Heartbeat light: faster and hotter with core heat; stutters when overheated.
       const bpm = 60 + style.led * 120;
       const ph = (rig.time * bpm / 60) % 1;
@@ -313,7 +343,9 @@ export function createRenderer(canvas) {
     ctx.fillStyle = style.shell; ctx.fill();
     if (style.led != null) {
       ellipsePath(hx + c * 0.06 * k, hy + s * 0.06 * k, z + 0.07 * k, hd, 0.045 * k, 0.07 * k);
-      ctx.fillStyle = C.elec1; ctx.fill();
+      ctx.fillStyle = style.empty ? C.void2 : C.elec1; ctx.fill();
+    }
+    if (style.led != null && !style.empty) {
       // Head lamp: a soft pool of light ahead of the bug.
       const [ex, ey] = P3(hx + c * 0.6, hy + s * 0.6, 0);
       lights.push({ x: ex, y: ey, r: 85, color: C.elec1, glow: 0.08 });
@@ -336,6 +368,19 @@ export function createRenderer(canvas) {
   // Spider: big abdomen behind, small thorax in front, eight legs, a row of
   // eyes that glow hot while it winds up and lunges.
   function drawSpider(rig, c, i, t) {
+    if (c.mode === 'emerge') {
+      // Crawling out of the vent: fades in as it rises.
+      const prog = 1 - c.stateTime / Math.max(1e-6, c.stateTotal);
+      ctx.save(); ctx.globalAlpha = Math.max(0.05, prog);
+      ctx.translate(0, (1 - prog) * 8);
+      drawSpiderBody(rig, c, i, t);
+      ctx.restore();
+      return;
+    }
+    drawSpiderBody(rig, c, i, t);
+  }
+
+  function drawSpiderBody(rig, c, i, t) {
     const o = rig.opts, k = o.scale, hd = rig.heading;
     const cs = Math.cos(hd), sn = Math.sin(hd);
     const { x, y } = rig.pos;
@@ -400,6 +445,109 @@ export function createRenderer(canvas) {
       ctx.lineTo(x1, y1); ctx.stroke();
     }
     lights.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, r: 40 + charge * 30, color: C.elec1, glow: 0.25 + charge * 0.3 });
+  }
+
+  // ---- vents ---------------------------------------------------------------
+  function drawVent(v, t, dt) {
+    const tx = Math.floor(v.x), ty = Math.floor(v.y);
+    diamond(tx, ty, 0, 0.12);
+    ctx.fillStyle = C.void0; ctx.fill();
+    ctx.strokeStyle = C.metal3; ctx.lineWidth = px(1.5); ctx.stroke();
+    // Slats.
+    ctx.strokeStyle = C.metal1; ctx.lineWidth = px(2);
+    for (let i = 1; i < 5; i++) {
+      const k = 0.12 + (i / 5) * 0.76;
+      ctx.beginPath();
+      ctx.moveTo(sx(tx + 0.18, ty + k), sy(tx + 0.18, ty + k));
+      ctx.lineTo(sx(tx + 0.82, ty + k), sy(tx + 0.82, ty + k));
+      ctx.stroke();
+    }
+    // Something red breathes down there.
+    const glow = 0.5 + 0.5 * Math.sin(t * 1.7 + v.x);
+    lights.push({ x: sx(v.x, v.y), y: sy(v.x, v.y), r: 34, color: C.blood2, glow: 0.12 + glow * 0.12 });
+    if (Math.random() < dt * 1.5) ventPuff(v, 1);
+  }
+
+  function ventPuff(v, n = 10) {
+    const X = sx(v.x, v.y), Y = sy(v.x, v.y);
+    for (let i = 0; i < n; i++) {
+      fx.particles.push({
+        x: X + (Math.random() - 0.5) * 24, y: Y - 2, vx: (Math.random() - 0.5) * 20, vy: -20 - Math.random() * 25,
+        life: 1, fade: 0.9 + Math.random() * 0.6, grav: -8, color: i % 3 ? C.metal3 : C.metal4, size: 3,
+      });
+    }
+  }
+
+  // ---- blood layer ---------------------------------------------------------
+  // World-pixel canvas under everything that stands on the floor. Splatters
+  // are generated once, when the kill happens, and stay for the run.
+  const decal = { canvas: null, ctx: null, map: null, x0: 0, y0: 0, w: 0, h: 0, k: 0.5 };
+
+  function resetDecals(map) {
+    decal.map = map;
+    decal.x0 = -map.h * HW; decal.y0 = -HH;
+    decal.w = (map.w + map.h) * HW; decal.h = (map.w + map.h) * HH + HH * 2;
+    decal.canvas = document.createElement('canvas');
+    decal.canvas.width = Math.ceil(decal.w * decal.k);
+    decal.canvas.height = Math.ceil(decal.h * decal.k);
+    decal.ctx = decal.canvas.getContext('2d');
+    decal.ctx.setTransform(decal.k, 0, 0, decal.k, -decal.x0 * decal.k, -decal.y0 * decal.k);
+  }
+
+  // A circle of radius r tiles lying on the floor.
+  function floorDot(g, x, y, r, color) {
+    g.fillStyle = color;
+    g.beginPath(); g.ellipse(sx(x, y), sy(x, y), r * Math.SQRT2 * HW, r * Math.SQRT2 * HH, 0, 0, Math.PI * 2); g.fill();
+  }
+
+  function bloodSplatter(map, x, y, dirX, dirY) {
+    if (decal.map !== map) resetDecals(map);
+    const g = decal.ctx;
+    const open = (px2, py2) => !isSolid(map, Math.floor(px2), Math.floor(py2));
+    const rnd = Math.random;
+    const gauss = () => (rnd() + rnd() + rnd() - 1.5) / 1.5;
+    const aim = Math.hypot(dirX, dirY) > 0.1 ? Math.atan2(dirY, dirX) : rnd() * Math.PI * 2;
+    // Pool where it died.
+    for (let i = 0; i < 5; i++) {
+      const px2 = x + gauss() * 0.12, py2 = y + gauss() * 0.12;
+      if (open(px2, py2)) floorDot(g, px2, py2, 0.08 + rnd() * 0.14, i < 2 ? C.blood0 : C.blood1);
+    }
+    // Streaks thrown along the dash.
+    g.lineCap = 'round';
+    for (let i = 0; i < 6; i++) {
+      const a = aim + gauss() * 0.35, len = 0.3 + rnd() * 0.8;
+      const ex = x + Math.cos(a) * len, ey = y + Math.sin(a) * len;
+      if (!open(ex, ey)) continue;
+      g.strokeStyle = rnd() < 0.3 ? C.blood2 : C.blood1;
+      g.lineWidth = 2 + rnd() * 3;
+      g.beginPath(); g.moveTo(sx(x, y), sy(x, y)); g.lineTo(sx(ex, ey), sy(ex, ey)); g.stroke();
+    }
+    // Droplets: most land close, a few fly far; smaller the further they go.
+    // Sized so even small drops survive the pixel filter (>= ~1 art pixel).
+    const n = 22 + Math.floor(rnd() * 14);
+    for (let i = 0; i < n; i++) {
+      const a = aim + gauss() * 0.9;
+      const d = Math.min(2.4, 0.2 - Math.log(1 - rnd() * 0.98) * 0.55);
+      const px2 = x + Math.cos(a) * d, py2 = y + Math.sin(a) * d;
+      if (!open(px2, py2)) continue;
+      const r = Math.max(0.03, 0.09 - d * 0.03) * (0.6 + rnd() * 0.8);
+      floorDot(g, px2, py2, r, rnd() < 0.25 ? C.blood2 : C.blood1);
+    }
+  }
+
+  // When a corpse leaves the simulation, its dried husk stays on the floor.
+  function bakeHusk(map, x, y) {
+    if (decal.map !== map) resetDecals(map);
+    const g = decal.ctx, hd = Math.random() * Math.PI * 2;
+    floorDot(g, x - Math.cos(hd) * 0.06, y - Math.sin(hd) * 0.06, 0.11, C.void2);
+    floorDot(g, x + Math.cos(hd) * 0.06, y + Math.sin(hd) * 0.06, 0.06, C.void1);
+    g.strokeStyle = C.void1; g.lineWidth = 1.5;
+    for (let i = 0; i < 8; i++) {
+      const a = hd + (i / 8) * Math.PI * 2 + 0.2;
+      const mx = x + Math.cos(a) * 0.14, my = y + Math.sin(a) * 0.14;
+      const ex = x + Math.cos(a + 0.5) * 0.1, ey = y + Math.sin(a + 0.5) * 0.1;
+      g.beginPath(); g.moveTo(sx(x, y), sy(x, y)); g.quadraticCurveTo(sx(mx, my), sy(mx, my), sx(ex, ey), sy(ex, ey)); g.stroke();
+    }
   }
 
   // ---- particles & weather --------------------------------------------------
@@ -523,6 +671,12 @@ export function createRenderer(canvas) {
     for (let ty = 0; ty < map.h; ty++) {
       for (let tx = 0; tx < map.w; tx++) if (!isSolid(map, tx, ty)) drawFloor(tx, ty, t);
     }
+    for (const v of state.vents) drawVent(v, t, dt);
+    // Blood and husks, baked into their own layer as they happen.
+    if (decal.canvas && decal.map === map) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(decal.canvas, decal.x0, decal.y0, decal.w, decal.h);
+    }
 
     // Dash afterimage on the floor.
     const pr = rigs.player;
@@ -537,7 +691,10 @@ export function createRenderer(canvas) {
       for (let tx = 0; tx < map.w; tx++) if (isSolid(map, tx, ty)) items.push({ d: tx + ty + 1, k: 0, tx, ty });
     }
     for (const s of state.shards) if (!s.taken) items.push({ d: s.x + s.y, k: 1, s });
-    rigs.critters.forEach((rig, i) => items.push({ d: rig.pos.x + rig.pos.y - (state.critters[i].alive ? 0 : 0.5), k: 3, rig, i, c: state.critters[i] }));
+    for (const c of state.critters) {
+      const rig = rigs.critters.get(c.id);
+      if (rig) items.push({ d: rig.pos.x + rig.pos.y - (c.alive ? 0 : 0.5), k: 3, rig, i: c.id, c });
+    }
     const pd = pr.pos.x + pr.pos.y;
     items.push({ d: pd, k: 2 });
     items.sort((a, b) => a.d - b.d || a.k - b.k);
@@ -547,19 +704,22 @@ export function createRenderer(canvas) {
       else if (it.k === 1) drawCell(it.s, t);
       else if (it.k === 3) drawSpider(it.rig, it.c, it.i, t);
       else {
+        const empty = p.charges <= 0;
         drawBug(pr, {
-          shell: C.hull1, shade: C.hull0, limb: C.limb, legW: 3, led: p.heat, overheated: p.overheated,
+          shell: empty ? C.hull0 : C.hull1, shade: empty ? C.metal1 : C.hull0, limb: C.limb,
+          legW: 3, led: p.heat, overheated: p.overheated, empty,
         }, t);
       }
     }
 
     // Pairs charging an attack are linked by a crackling arc.
-    state.critters.forEach((c, i) => {
-      if (!c.alive || c.mode !== 'windup' || c.role !== 0) return;
-      const o = state.critters[c.partner];
-      if (!o || !o.alive) return;
-      drawArc(rigs.critters[i], rigs.critters[c.partner], t, 1 - c.stateTime / Math.max(1e-6, c.stateTotal));
-    });
+    for (const c of state.critters) {
+      if (!c.alive || c.mode !== 'windup' || c.role !== 0) continue;
+      const o = state.critters.find((q) => q.id === c.partner);
+      const ra = rigs.critters.get(c.id), rb = o && rigs.critters.get(o.id);
+      if (!o || !o.alive || !ra || !rb) continue;
+      drawArc(ra, rb, t, 1 - c.stateTime / Math.max(1e-6, c.stateTotal));
+    }
 
     // Outline on top so the player stays visible behind walls.
     ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight, pr.heading, 0.26, 0.16);
@@ -615,7 +775,9 @@ export function createRenderer(canvas) {
   }
 
   return {
-    resize, draw, burst, hitFx, splat, updateFx,
+    resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals,
+    ventPuff: (v) => ventPuff(v, 14),
+    bigBurst: (x, y) => { burst(x, y); burst(x, y); },
     screenOf: (x, y) => ({ x: sx(x, y), y: sy(x, y) }),
     get size() { return { w, h }; },
   };

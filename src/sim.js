@@ -21,7 +21,19 @@ export const DEFAULT_PARAMS = {
   heatCool: 0.3,
   overheatRecover: 0.35, // overheated until heat cools to this
   overheatSpeed: 0.65, // top speed multiplier while overheated
-  startCharges: 1, // dash charges at the start; each battery cell adds one
+  startCharges: 10, // dash charges at the start
+  maxCharges: 30,
+  smallCharge: 3, // charges in a small battery cell
+  bigCharge: 9, // charges in a big red battery
+  maxHealth: 10,
+  hitDamage: 1,
+  ventFirstMin: 1.5, ventFirstMax: 3.5, // first spawn per vent, s
+  ventMin: 4, ventMax: 8, // spawn interval per vent, s
+  maxSpiders: 8, // alive at once
+  ventSafe: 1.5, // no spawn while the player is this close to the vent
+  emergeTime: 0.6,
+  spawnCooldown: 1.5, // attack cooldown of a freshly spawned spider
+  corpseTime: 12,
   critterRadius: 0.18,
   critterSpeed: 1.1,
   critterFleeSpeed: 3.2,
@@ -61,17 +73,20 @@ export function parseLevel(level) {
   const solid = new Uint8Array(w * h);
   const shards = [];
   const critters = [];
+  const vents = [];
   let spawn = { x: w / 2, y: h / 2 };
   for (let ty = 0; ty < h; ty++) {
     for (let tx = 0; tx < w; tx++) {
       const c = rows[ty][tx] ?? '#';
       if (c === '#') solid[ty * w + tx] = 1;
       else if (c === 'P') spawn = { x: tx + 0.5, y: ty + 0.5 };
-      else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5, big: false });
+      else if (c === 'B') shards.push({ x: tx + 0.5, y: ty + 0.5, big: true });
+      else if (c === 'V') vents.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'b' || c === 's') critters.push({ x: tx + 0.5, y: ty + 0.5 });
     }
   }
-  return { name: level.name, w, h, solid, shards, critters, spawn };
+  return { name: level.name, w, h, solid, shards, critters, vents, spawn };
 }
 
 export function isSolid(map, tx, ty) {
@@ -79,16 +94,28 @@ export function isSolid(map, tx, ty) {
   return map.solid[ty * map.w + tx] === 1;
 }
 
+// A new spider. Spiders have ids because they come and go (vents, corpses).
+export function makeSpider(state, x, y, extra = {}) {
+  const c = {
+    id: state.nextId++,
+    x, y, px: x, py: y, vx: 0, vy: 0,
+    dirX: 0, dirY: 0, timer: 0, fleeing: false,
+    alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
+    lungeX: 0, lungeY: 0, stateTime: 0, stateTotal: 0, deadTime: 0,
+    ...extra,
+  };
+  state.critters.push(c);
+  return c;
+}
+
 export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
   const map = parseLevel(level);
-  return {
+  const state = {
     seed: seed >>> 0,
-    critters: map.critters.map((c, i) => ({
-      x: c.x, y: c.y, px: c.x, py: c.y, vx: 0, vy: 0,
-      dirX: 0, dirY: 0, timer: 0.3 * i, fleeing: false,
-      alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
-      lungeX: 0, lungeY: 0, stateTime: 0,
-    })),
+    nextId: 1,
+    critters: [],
+    vents: [],
+    events: [], // drained by the browser; never read by the simulation
     kills: 0,
     hits: 0,
     map,
@@ -102,14 +129,22 @@ export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
       heat: 0, // 0..1, rises with each dash, cools over time
       overheated: false, // set when heat hits 1: no dash, slower
       charges: params.startCharges, // each dash spends one
+      health: params.maxHealth,
       stun: 0, invuln: 0,
     },
-    shards: map.shards.map((s) => ({ x: s.x, y: s.y, taken: false })),
+    shards: map.shards.map((s) => ({ x: s.x, y: s.y, big: s.big, taken: false })),
     collected: 0,
     time: 0,
     won: false,
+    dead: false,
     tick: 0,
   };
+  map.critters.forEach((c, i) => makeSpider(state, c.x, c.y, { timer: 0.3 * i }));
+  state.vents = map.vents.map((v) => ({
+    x: v.x, y: v.y,
+    timer: params.ventFirstMin + rand(state) * (params.ventFirstMax - params.ventFirstMin),
+  }));
+  return state;
 }
 
 export function worldToScreen(x, y) {
@@ -201,6 +236,12 @@ function move(map, p, mv, dt, r) {
 // button went down.
 export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   const p = state.player;
+  if (state.dead) {
+    // Frozen: keep interpolation still, change nothing else.
+    p.px = p.x; p.py = p.y;
+    for (const c of state.critters) { c.px = c.x; c.py = c.y; }
+    return state;
+  }
   const r = params.radius;
   p.px = p.x; p.py = p.y;
 
@@ -266,15 +307,22 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     if (Math.hypot(s.x - p.x, s.y - p.y) <= reach) {
       s.taken = true;
       state.collected++;
-      p.charges++;
+      const gain = s.big ? params.bigCharge : params.smallCharge;
+      p.charges = Math.min(params.maxCharges, p.charges + gain);
+      state.events.push({ type: 'pickup', x: s.x, y: s.y, big: s.big });
     }
   }
 
+  stepVents(state, params, dt);
   stepSpiders(state, params, dt, dashing);
 
-  if (!state.won) {
+  if (!state.won && !state.dead) {
     state.time += dt;
-    if (state.collected === state.shards.length) state.won = true;
+    // A level without cells has no win condition (test rooms).
+    if (state.shards.length > 0 && state.collected === state.shards.length) {
+      state.won = true;
+      state.events.push({ type: 'win' });
+    }
   }
   state.tick++;
   return state;
@@ -305,12 +353,39 @@ function hitPlayer(state, c, params) {
   p.dashBuffer = 0;
   p.heat = Math.min(1, p.heat + params.hitHeat);
   if (p.heat >= 1) p.overheated = true;
+  p.health = Math.max(0, p.health - params.hitDamage);
   state.hits++;
+  state.events.push({ type: 'hit', x: p.x, y: p.y, health: p.health });
+  if (p.health <= 0 && !state.won) {
+    state.dead = true;
+    state.events.push({ type: 'death' });
+  }
 }
 
 function killSpider(state, c) {
-  c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0;
+  const p = state.player;
+  c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0; c.deadTime = 0;
   state.kills++;
+  state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX: p.dashX, dirY: p.dashY });
+}
+
+// Vents release a spider when their timer runs out, if there is room and
+// the player isn't standing on top of them.
+function stepVents(state, params, dt) {
+  const p = state.player;
+  for (const v of state.vents) {
+    v.timer -= dt;
+    if (v.timer > 0) continue;
+    const alive = state.critters.filter((c) => c.alive).length;
+    if (alive >= params.maxSpiders || dist(v, p) < params.ventSafe) { v.timer = 1; continue; }
+    const c = makeSpider(state, v.x, v.y, {
+      mode: 'emerge', stateTime: params.emergeTime, stateTotal: params.emergeTime,
+    });
+    const a = rand(state) * Math.PI * 2;
+    c.dirX = Math.cos(a); c.dirY = Math.sin(a);
+    state.events.push({ type: 'spawn', id: c.id, x: v.x, y: v.y });
+    v.timer = params.ventMin + rand(state) * (params.ventMax - params.ventMin);
+  }
 }
 
 // Spiders: alone they wander, flee, or walk to a partner. Two free spiders
@@ -322,17 +397,22 @@ function stepSpiders(state, params, dt, dashing) {
   const contact = params.radius + params.critterRadius;
   for (const c of state.critters) {
     c.px = c.x; c.py = c.y;
-    if (!c.alive) continue;
+    if (!c.alive) { c.deadTime += dt; continue; }
     c.cooldown = Math.max(0, c.cooldown - dt);
   }
+  // Old corpses leave the simulation (the renderer keeps a husk on the floor).
+  state.critters = state.critters.filter((c) => {
+    if (c.alive || c.deadTime < params.corpseTime) return true;
+    state.events.push({ type: 'corpse', id: c.id, x: c.x, y: c.y });
+    return false;
+  });
 
-  // Pair up, in index order so the result is deterministic.
-  state.critters.forEach((c, i) => {
+  // Pair up, in list order so the result is deterministic.
+  state.critters.forEach((c) => {
     if (!canPair(c) || dist(c, p) > params.aggroRange) return;
     const o = nearestPartner(state, c, params.pairRange);
     if (!o) return;
-    const j = state.critters.indexOf(o);
-    for (const [a, partner, role] of [[c, j, 0], [o, i, 1]]) {
+    for (const [a, partner, role] of [[c, o.id, 0], [o, c.id, 1]]) {
       a.mode = 'windup'; a.stateTime = params.windup; a.stateTotal = params.windup;
       a.partner = partner; a.role = role; a.hitDone = false;
     }
@@ -344,7 +424,10 @@ function stepSpiders(state, params, dt, dashing) {
     const d = Math.hypot(dx, dy) || 1;
     let tx = 0, ty = 0, accel = params.critterAccel;
 
-    if (c.mode === 'windup') {
+    if (c.mode === 'emerge') {
+      c.stateTime -= dt;
+      if (c.stateTime <= 0) { c.mode = 'wander'; c.cooldown = params.spawnCooldown; c.timer = 0; }
+    } else if (c.mode === 'windup') {
       c.dirX = -dx / d; c.dirY = -dy / d; // face the player
       c.stateTime -= dt;
       if (c.stateTime <= 0) {
@@ -404,7 +487,7 @@ function stepSpiders(state, params, dt, dashing) {
     }
 
     if (c.mode !== 'lunge') {
-      if (c.mode === 'windup' || c.mode === 'thrown') { tx = 0; ty = 0; }
+      if (c.mode === 'windup' || c.mode === 'thrown' || c.mode === 'emerge') { tx = 0; ty = 0; }
       [c.vx, c.vy] = approach(c.vx, c.vy, tx, ty, accel * dt);
     }
     const want = Math.hypot(c.vx, c.vy);

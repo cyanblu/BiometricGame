@@ -50,8 +50,17 @@ body {
 #hud-dash.ready::after { background: var(--visor); }
 #hud-dash.blocked::after { background: var(--hot); }
 #hud-bpm { transition: color 0.2s; }
-#hud-charges { color: var(--visor); }
-#hud-charges.empty { color: var(--hot); }
+/* Vitals: pixel sprite (132 x 40) scaled up crisp, bottom left. */
+.vitals-box {
+  --vs: 3;
+  position: fixed; left: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  display: grid; gap: 2px; pointer-events: none;
+}
+#vitals { width: calc(132px * var(--vs)); height: calc(40px * var(--vs)); image-rendering: pixelated; display: block; }
+.vitals-cap { display: flex; justify-content: space-between; padding-inline: calc(26px * var(--vs)) 8px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+#cap-hp { color: #b8262a; }
+#cap-ch { color: var(--ember); }
+#cap-ch.empty { color: var(--hot); }
 #hud-bpm.hot { color: var(--hot); }
 .motion { display: grid; gap: 8px; }
 .motion canvas { width: 100%; height: auto; aspect-ratio: 536 / 200; background: var(--night); border: 1px solid var(--line); border-radius: 4px; }
@@ -68,21 +77,23 @@ body {
 #tune-btn { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); }
 
 .keys {
-  position: fixed; left: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  position: fixed; left: 16px; top: calc(env(safe-area-inset-top, 0px) + 58px);
   color: var(--muted); font-size: 12px; pointer-events: none;
 }
 .keys kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
 
-#intro, #win {
+#intro, #win, #dead {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(360px, calc(100% - 32px)); box-sizing: border-box;
   background: var(--glass); border: 1px solid var(--line); border-radius: 2px;
   padding: 20px 22px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   display: grid; gap: 10px;
 }
-#intro h1, #win h2 { margin: 0; font: 700 26px/1.05 var(--display); text-wrap: balance; }
-#intro p, #win p { margin: 0; color: var(--muted); }
+#intro h1, #win h2, #dead h2 { margin: 0; font: 700 26px/1.05 var(--display); text-wrap: balance; }
+#intro p, #win p, #dead p { margin: 0; color: var(--muted); }
 #intro .go { color: var(--ember); font-weight: 500; }
+#dead h2 { color: var(--hot); }
+#dead-time { font: 700 28px/1 var(--display); color: var(--muted); font-variant-numeric: tabular-nums; }
 #win-time { font: 700 34px/1 var(--display); color: var(--ember); font-variant-numeric: tabular-nums; }
 
 #panel {
@@ -129,6 +140,7 @@ body {
   .keys { display: none; }
 }
 @media (max-width: 560px) {
+  .vitals-box { --vs: 2; }
   #panel { top: auto; left: 0; width: 100%; max-height: 62%; border-left: 0; border-top: 1px solid var(--line); border-radius: 0; }
   .brand { display: none; }
   .hud { justify-content: flex-end; }
@@ -146,17 +158,20 @@ body {
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Biometric<small>Prototype 0.4 · Pump Yard</small></div>
+  <div class="brand">Biometric<small>Prototype 0.5 · Pump Yard</small></div>
   <div class="stats">
     <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Cells</span></div>
-    <div class="stat"><b id="hud-charges" class="charges">1</b><span>Charges</span></div>
-    <div class="stat"><b id="hud-kills">0 / 0</b><span>Spiders</span></div>
+    <div class="stat"><b id="hud-kills">0</b><span>Kills</span></div>
     <div class="stat"><b id="hud-time">0:00.00</b><span>Time</span></div>
     <div class="stat"><b id="hud-bpm">60</b><span id="hud-bpm-label">BPM</span></div>
     <div class="stat"><div id="hud-dash" class="ready"></div><span>Dash</span></div>
   </div>
 </div>
 
+<div class="vitals-box" aria-label="Vitals">
+  <canvas id="vitals" aria-hidden="true"></canvas>
+  <div class="vitals-cap"><span><span id="cap-hp">10 / 10</span> health</span><span><span id="cap-ch">10 / 30</span> charges</span></div>
+</div>
 <div class="keys"><kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>T</kbd> tune</div>
 <button class="btn" id="tune-btn" type="button" aria-expanded="false" aria-controls="panel">Tune</button>
 <button id="dash-btn" type="button">DASH</button>
@@ -164,10 +179,17 @@ body {
 
 <section id="intro">
   <h1>Biometric</h1>
-  <p>You are a small mechanical bug in a drowned pump yard. <span id="intro-count">Nine</span> battery cells lie in the rain. Collect them all as fast as you can.</p>
-  <p>Every dash burns one charge, and every cell you pick up gives one back. Dash straight through a spider to kill it.</p>
-  <p>Spiders are cowards alone. When two stand together an arc crackles between them and they lunge. A hit spikes your heat; too hot and you overheat.</p>
+  <p>You are a small mechanical bug in a drowned pump yard. <span id="intro-count">Fifteen</span> batteries lie in the rain. Collect them all as fast as you can.</p>
+  <p>Every dash burns one charge. A small cell gives 3, a big red battery 9. Dash straight through a spider to kill it.</p>
+  <p>Spiders crawl out of the vents. Alone they are cowards; two together crackle with an arc and lunge. Ten hits and you are done.</p>
   <p class="go">Press a move key or tap to start.</p>
+</section>
+
+<section id="dead" hidden>
+  <h2>Signal lost</h2>
+  <div id="dead-time" class="big-time">0:00.00</div>
+  <p id="dead-stats"></p>
+  <div class="actions"><button class="btn" id="again-dead" type="button">Try again (R)</button></div>
 </section>
 
 <section id="win" hidden>

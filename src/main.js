@@ -4,6 +4,7 @@ import { createRenderer, LOOK_DEFAULTS } from './render.js';
 import { LEVELS } from './levels.js';
 import { createRig, updateRig, setRigMotion, RIG_DEFAULTS, SPIDER_RIG } from './bug.js';
 import { stepResponse } from './dynamics.js';
+import { createVitals } from './vitals.js';
 
 const VIEW_DEFAULTS = { zoom: 1, camLag: 0.12 };
 // Body-motion presets. "Robot" is the setup from the procedural-animation
@@ -70,11 +71,22 @@ function start(snapshot) {
     const p = state.player;
     rigs = {
       player: createRig(p.x, p.y, Math.atan2(p.faceY, p.faceX), { ...rigOpts }),
-      critters: state.critters.map((c, i) => createRig(c.x, c.y, i * 1.3, SPIDER_RIG)),
+      critters: new Map(), // by spider id; spiders come and go
     };
+    syncSpiderRigs();
+    renderer.resetDecals(state.map);
+  }
+  function syncSpiderRigs() {
+    const ids = new Set();
+    for (const c of state.critters) {
+      ids.add(c.id);
+      if (!rigs.critters.has(c.id)) rigs.critters.set(c.id, createRig(c.x, c.y, Math.atan2(c.dirY, c.dirX) || c.id * 1.3, SPIDER_RIG));
+    }
+    for (const id of rigs.critters.keys()) if (!ids.has(id)) rigs.critters.delete(id);
   }
   makeRigs();
-  let collectedSeen = 0, hitsSeen = 0, shake = 0;
+  let shake = 0, vitalsFlash = 0;
+  const vitals = createVitals($('vitals'));
   let started = false;
 
   function centreCamera() {
@@ -83,10 +95,10 @@ function start(snapshot) {
   }
   function restart() {
     state = createState(LEVELS[levelIndex], (Date.now() >>> 0) || 1);
-    collectedSeen = 0; hitsSeen = 0;
     makeRigs();
     centreCamera();
     $('win').hidden = true;
+    $('dead').hidden = true;
   }
 
   // ---- input -------------------------------------------------------------
@@ -312,7 +324,7 @@ function start(snapshot) {
   }
 
   // ---- HUD ---------------------------------------------------------------
-  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudCharges = $('hud-charges'), hudKills = $('hud-kills'), hudBpmLabel = $('hud-bpm-label');
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudKills = $('hud-kills'), capHp = $('cap-hp'), capCh = $('cap-ch'), hudBpmLabel = $('hud-bpm-label');
   const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
   function updateHud() {
     hudShards.textContent = `${state.collected} / ${state.shards.length}`;
@@ -323,9 +335,10 @@ function start(snapshot) {
     const canDash = pl.dashCooldown <= 0 && !pl.overheated && pl.charges > 0;
     hudDash.classList.toggle('ready', canDash);
     hudDash.classList.toggle('blocked', pl.overheated || pl.charges === 0);
-    hudCharges.textContent = String(pl.charges);
-    hudCharges.classList.toggle('empty', pl.charges === 0);
-    hudKills.textContent = `${state.kills} / ${state.critters.length}`;
+    hudKills.textContent = String(state.kills);
+    capHp.textContent = `${pl.health} / ${params.maxHealth}`;
+    capCh.textContent = `${pl.charges} / ${params.maxCharges}`;
+    capCh.classList.toggle('empty', pl.charges === 0);
     const bpm = Math.round(60 + state.player.heat * 120);
     hudBpm.textContent = state.player.overheated ? 'HOT' : String(bpm);
     hudBpm.classList.toggle('hot', state.player.heat > 0.5);
@@ -341,8 +354,30 @@ function start(snapshot) {
     $('win').hidden = false;
   }
   $('again').addEventListener('click', () => { restart(); begin(); });
+  $('again-dead').addEventListener('click', () => { restart(); begin(); });
+  function onDeath() {
+    $('dead-time').textContent = fmtTime(state.time);
+    $('dead-stats').textContent = `${state.collected} of ${state.shards.length} cells, ${state.kills} spiders killed.`;
+    $('dead').hidden = false;
+  }
 
-  const WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve'];
+  // The simulation reports what happened; turn it into effects here.
+  const eventLog = []; // last events, readable through #debug
+  function drainEvents(ix, iy) {
+    for (const e of state.events) {
+      eventLog.push(e); if (eventLog.length > 50) eventLog.shift();
+      if (e.type === 'pickup') { if (e.big) renderer.bigBurst(e.x, e.y); else renderer.burst(e.x, e.y); }
+      else if (e.type === 'kill') { renderer.splat(e.x, e.y); renderer.bloodSplatter(state.map, e.x, e.y, e.dirX, e.dirY); }
+      else if (e.type === 'hit') { renderer.hitFx(ix, iy); shake = 0.25; vitalsFlash = 0.2; }
+      else if (e.type === 'spawn') renderer.ventPuff({ x: e.x, y: e.y });
+      else if (e.type === 'corpse') renderer.bakeHusk(state.map, e.x, e.y);
+      else if (e.type === 'win') onWin();
+      else if (e.type === 'death') onDeath();
+    }
+    state.events.length = 0;
+  }
+
+  const WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen', 'Twenty'];
   $('intro-count').textContent = WORDS[state.shards.length] ?? String(state.shards.length);
 
   // ---- loop --------------------------------------------------------------
@@ -364,25 +399,16 @@ function start(snapshot) {
       acc += dt;
       let input = readInput();
       while (acc >= STEP) {
-        const wasWon = state.won;
         step(state, input, params);
         input = { ...input, dash: false }; // a press counts once
         acc -= STEP;
-        if (!wasWon && state.won) onWin();
       }
     }
     view.alpha = started ? acc / STEP : 1;
     const p = state.player;
     const ix = p.px + (p.x - p.px) * view.alpha, iy = p.py + (p.y - p.py) * view.alpha;
-    while (collectedSeen < state.collected) {
-      const s = state.shards.find((q) => q.taken && !q.burst);
-      if (s) { s.burst = true; renderer.burst(s.x, s.y); }
-      collectedSeen++;
-    }
-    if (state.hits > hitsSeen) { hitsSeen = state.hits; renderer.hitFx(ix, iy); shake = 0.25; }
-    state.critters.forEach((c) => {
-      if (!c.alive && !c.splatted) { c.splatted = true; renderer.splat(c.x, c.y); }
-    });
+    drainEvents(ix, iy);
+    syncSpiderRigs();
     renderer.updateFx(dt, p, ix, iy, rigs.player);
     // Animation runs on real frame time; the follower clamps itself on long frames.
     const adt = Math.min(dt, 0.1);
@@ -393,10 +419,15 @@ function start(snapshot) {
       bodyZeta: rigOpts.bodyZeta * (1 - 0.6 * p.heat),
     });
     updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy }, blocked);
-    state.critters.forEach((c, i) => {
-      if (!c.alive) return; // corpses stay where they fell
+    for (const c of state.critters) {
+      if (!c.alive) continue; // corpses stay where they fell
       const cx = c.px + (c.x - c.px) * view.alpha, cy = c.py + (c.y - c.py) * view.alpha;
-      updateRig(rigs.critters[i], adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, blocked);
+      updateRig(rigs.critters.get(c.id), adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, blocked);
+    }
+    vitalsFlash = Math.max(0, vitalsFlash - dt);
+    vitals.draw({
+      health: p.health, maxHealth: params.maxHealth, charges: p.charges, maxCharges: params.maxCharges,
+      bpm: 60 + p.heat * 120, overheated: p.overheated, flash: vitalsFlash, t: clock,
     });
     // Camera eases toward the player; lag is the time constant in seconds.
     const target = renderer.screenOf(ix, iy);
@@ -414,7 +445,7 @@ function start(snapshot) {
 
   window.claude?.hot?.snapshot?.(() => ({ tune: tuneData() }));
   // Test hook: open the page with #debug to reach the live state from a script.
-  if (location.hash === '#debug') window.biometricDebug = { get state() { return state; }, params, look, view };
+  if (location.hash === '#debug') window.biometricDebug = { get state() { return state; }, params, look, view, events: eventLog };
 }
 
 const hot = window.claude?.hot;
