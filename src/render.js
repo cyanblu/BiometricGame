@@ -1,7 +1,8 @@
 // Canvas renderer. Reads simulation state, never changes it.
-// The world is drawn into a small offscreen canvas (one pixel per `look.pixel`
-// screen pixels), lit, snapped to the palette in src/pixel.js, then scaled up
-// without smoothing: a pixelated viewport over a grimy, wet, electrical world.
+// The world is drawn into a small offscreen canvas at a fixed art resolution
+// (one art pixel = `look.pixel` world pixels, whatever the zoom), lit, snapped
+// to the palette in src/pixel.js, then scaled up by a whole number without
+// smoothing. Zoom only changes that whole-number scale, never the art.
 import { TILE_W, TILE_H, isSolid } from './sim.js';
 import { hipOf, legIK } from './bug.js';
 import { COLORS, buildLut, quantize } from './pixel.js';
@@ -12,7 +13,7 @@ const Z_PX = 36; // world pixels per tile of height
 const HW = TILE_W / 2;
 const HH = TILE_H / 2;
 
-export const LOOK_DEFAULTS = { pixel: 3, dither: 6, darkness: 0.55, rain: 0.6, palette: true };
+export const LOOK_DEFAULTS = { pixel: 2, dither: 6, darkness: 0.55, rain: 0.6, palette: true };
 
 // Stable per-tile noise in [0, 1).
 function hash(a, b, k = 0) {
@@ -330,10 +331,76 @@ export function createRenderer(canvas) {
     for (const l of legs) if (depth(l) >= mid) drawLeg(rig, l, style);
   }
 
-  const CRITTER_STYLES = [
-    { shell: C.beetleA1, shade: C.beetleA0, limb: C.limb, legW: 1.6, led: null },
-    { shell: C.beetleB1, shade: C.beetleB0, limb: C.limb, legW: 1.6, led: null },
-  ];
+  const SPIDER_SHELLS = [[C.beetleB1, C.beetleB0], [C.beetleA1, C.beetleA0]];
+
+  // Spider: big abdomen behind, small thorax in front, eight legs, a row of
+  // eyes that glow hot while it winds up and lunges.
+  function drawSpider(rig, c, i, t) {
+    const o = rig.opts, k = o.scale, hd = rig.heading;
+    const cs = Math.cos(hd), sn = Math.sin(hd);
+    const { x, y } = rig.pos;
+    const dead = !c.alive;
+    const [shell, shade] = dead ? [C.void2, C.void1] : SPIDER_SHELLS[i % SPIDER_SHELLS.length];
+    const z = dead ? 0.04 : o.bodyHeight * k;
+    ellipsePath(x, y, 0, hd, 0.32 * k, 0.26 * k);
+    ctx.fillStyle = C.void1; ctx.fill();
+    const style = { limb: dead ? C.void2 : C.limb, legW: 1.4, led: null, shade };
+    const depth = (l) => { const hp = hipOf(rig, l); return hp.x + hp.y; };
+    const legs = [...rig.legs].sort((a, b) => depth(a) - depth(b));
+    if (dead) {
+      // Legs curled in under the body.
+      ctx.strokeStyle = C.void2; ctx.lineWidth = px(1.4);
+      for (const l of rig.legs) {
+        const hp = hipOf(rig, l);
+        const fx2 = x + (l.foot.x - x) * 0.45, fy2 = y + (l.foot.y - y) * 0.45;
+        ctx.beginPath(); ctx.moveTo(...P3(hp.x, hp.y, z)); ctx.quadraticCurveTo(...P3(fx2, fy2, 0.12 * k), ...P3(fx2 * 0.8 + x * 0.2, fy2 * 0.8 + y * 0.2, 0.02)); ctx.stroke();
+      }
+    } else {
+      for (const l of legs) if (depth(l) < x + y) drawLeg(rig, l, style);
+    }
+    const ax = x - cs * 0.16 * k, ay = y - sn * 0.16 * k;
+    ellipsePath(ax, ay, z - 0.04 * k, hd, 0.21 * k, 0.17 * k);
+    ctx.fillStyle = shade; ctx.fill();
+    ellipsePath(ax, ay, z + 0.02 * k, hd, 0.2 * k, 0.16 * k);
+    ctx.fillStyle = shell; ctx.fill();
+    // Hourglass-ish marking.
+    ellipsePath(ax, ay, z + 0.03 * k, hd, 0.07 * k, 0.04 * k);
+    ctx.fillStyle = dead ? C.void1 : C.rust2; ctx.fill();
+    const tx = x + cs * 0.08 * k, ty = y + sn * 0.08 * k;
+    ellipsePath(tx, ty, z, hd, 0.11 * k, 0.09 * k);
+    ctx.fillStyle = shell; ctx.fill();
+    if (!dead) {
+      const angry = c.mode === 'windup' || c.mode === 'lunge';
+      for (const side of [-1, 1]) {
+        const [ex, ey] = P3(tx + cs * 0.08 * k - sn * side * 0.035 * k, ty + sn * 0.08 * k + cs * side * 0.035 * k, z + 0.03);
+        ctx.fillStyle = angry ? C.hot1 : C.hot0;
+        ctx.fillRect(ex - onePx / 2, ey - onePx / 2, onePx, onePx);
+      }
+      // Eyes always glint a little, so spiders can be spotted in the dark.
+      const [ex, ey] = P3(tx, ty, z);
+      lights.push(angry
+        ? { x: ex, y: ey, r: 26, color: C.hot1, glow: 0.35 }
+        : { x: ex, y: ey, r: 12, color: C.hot0, glow: 0.3 });
+      for (const l of legs) if (depth(l) >= x + y) drawLeg(rig, l, style);
+    }
+  }
+
+  // Jagged electric arc between two spiders; brighter as the wind-up completes.
+  function drawArc(ra, rb, t, charge) {
+    const za = ra.opts.bodyHeight * ra.opts.scale, zb = rb.opts.bodyHeight * rb.opts.scale;
+    const [x0, y0] = P3(ra.pos.x, ra.pos.y, za), [x1, y1] = P3(rb.pos.x, rb.pos.y, zb);
+    const seg = 6, jitter = 3 + charge * 5, frame = Math.floor(t * 24);
+    for (const [color, wdt] of [[C.elec1, 2], [C.elec2, 1]]) {
+      ctx.strokeStyle = color; ctx.lineWidth = px(wdt);
+      ctx.beginPath(); ctx.moveTo(x0, y0);
+      for (let i = 1; i < seg; i++) {
+        const f = i / seg;
+        ctx.lineTo(x0 + (x1 - x0) * f + (hash(i, frame, 1) - 0.5) * jitter * 2, y0 + (y1 - y0) * f + (hash(i, frame, 2) - 0.5) * jitter * 2);
+      }
+      ctx.lineTo(x1, y1); ctx.stroke();
+    }
+    lights.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, r: 40 + charge * 30, color: C.elec1, glow: 0.25 + charge * 0.3 });
+  }
 
   // ---- particles & weather --------------------------------------------------
   function burst(x, y) {
@@ -342,6 +409,26 @@ export function createRenderer(canvas) {
       fx.particles.push({
         x: sx(x, y), y: sy(x, y) - 10, vx: Math.cos(a) * 80, vy: Math.sin(a) * 50 - 50,
         life: 1, fade: 2, grav: 200, color: i % 3 ? C.cell2 : C.elec2,
+      });
+    }
+  }
+
+  function hitFx(x, y) {
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 18) * Math.PI * 2;
+      fx.particles.push({
+        x: sx(x, y), y: sy(x, y) - 8, vx: Math.cos(a) * 110, vy: Math.sin(a) * 70 - 40,
+        life: 1, fade: 2.5, grav: 260, color: i % 2 ? C.hot1 : C.bone,
+      });
+    }
+  }
+
+  function splat(x, y) {
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      fx.particles.push({
+        x: sx(x, y), y: sy(x, y) - 6, vx: Math.cos(a) * 60, vy: Math.sin(a) * 40 - 30,
+        life: 1, fade: 1.6, grav: 220, color: i % 3 ? C.moss2 : C.elec2, size: i % 3 ? 3 : 2,
       });
     }
   }
@@ -389,8 +476,11 @@ export function createRenderer(canvas) {
   function draw(state, view, rigs, t, look, dt = 0) {
     const { map } = state;
     const p = state.player;
-    const ps = Math.max(1, Math.round(look.pixel));
-    const lw = Math.max(1, Math.ceil(w / ps)), lh = Math.max(1, Math.ceil(h / ps));
+    scale = 1 / look.pixel; // art pixels per world pixel: fixed, zoom-independent
+    onePx = look.pixel;
+    // Device pixels per art pixel: whole numbers only, so every art pixel is the same size.
+    const up = Math.max(1, Math.round(view.zoom * dpr * look.pixel));
+    const lw = Math.max(1, Math.ceil(canvas.width / up)), lh = Math.max(1, Math.ceil(canvas.height / up));
     if (low.width !== lw || low.height !== lh) {
       low.width = lw; low.height = lh; light.width = lw; light.height = lh;
     }
@@ -400,8 +490,6 @@ export function createRenderer(canvas) {
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = C.void0; ctx.fillRect(0, 0, lw, lh);
 
-    scale = view.zoom / ps;
-    onePx = 1 / scale;
     // Snap the camera to whole low-res pixels so walls don't shimmer.
     const ox = Math.round(lw / 2 - view.camX * scale), oy = Math.round(lh / 2 - view.camY * scale);
 
@@ -449,7 +537,7 @@ export function createRenderer(canvas) {
       for (let tx = 0; tx < map.w; tx++) if (isSolid(map, tx, ty)) items.push({ d: tx + ty + 1, k: 0, tx, ty });
     }
     for (const s of state.shards) if (!s.taken) items.push({ d: s.x + s.y, k: 1, s });
-    rigs.critters.forEach((rig, i) => items.push({ d: rig.pos.x + rig.pos.y, k: 3, rig, i }));
+    rigs.critters.forEach((rig, i) => items.push({ d: rig.pos.x + rig.pos.y - (state.critters[i].alive ? 0 : 0.5), k: 3, rig, i, c: state.critters[i] }));
     const pd = pr.pos.x + pr.pos.y;
     items.push({ d: pd, k: 2 });
     items.sort((a, b) => a.d - b.d || a.k - b.k);
@@ -457,13 +545,21 @@ export function createRenderer(canvas) {
     for (const it of items) {
       if (it.k === 0) drawWall(map, it.tx, it.ty, t, it.d > pd && hidesPlayer(it.tx, it.ty, pr) ? 0.35 : 1);
       else if (it.k === 1) drawCell(it.s, t);
-      else if (it.k === 3) drawBug(it.rig, CRITTER_STYLES[it.i % CRITTER_STYLES.length], t);
+      else if (it.k === 3) drawSpider(it.rig, it.c, it.i, t);
       else {
         drawBug(pr, {
           shell: C.hull1, shade: C.hull0, limb: C.limb, legW: 3, led: p.heat, overheated: p.overheated,
         }, t);
       }
     }
+
+    // Pairs charging an attack are linked by a crackling arc.
+    state.critters.forEach((c, i) => {
+      if (!c.alive || c.mode !== 'windup' || c.role !== 0) return;
+      const o = state.critters[c.partner];
+      if (!o || !o.alive) return;
+      drawArc(rigs.critters[i], rigs.critters[c.partner], t, 1 - c.stateTime / Math.max(1e-6, c.stateTotal));
+    });
 
     // Outline on top so the player stays visible behind walls.
     ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight, pr.heading, 0.26, 0.16);
@@ -515,11 +611,11 @@ export function createRenderer(canvas) {
 
     out.setTransform(1, 0, 0, 1, 0, 0);
     out.imageSmoothingEnabled = false;
-    out.drawImage(low, 0, 0, lw * ps * dpr, lh * ps * dpr);
+    out.drawImage(low, 0, 0, lw * up, lh * up);
   }
 
   return {
-    resize, draw, burst, updateFx,
+    resize, draw, burst, hitFx, splat, updateFx,
     screenOf: (x, y) => ({ x: sx(x, y), y: sy(x, y) }),
     get size() { return { w, h }; },
   };

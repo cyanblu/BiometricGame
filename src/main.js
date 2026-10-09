@@ -2,13 +2,10 @@
 import { createState, step, STEP, DEFAULT_PARAMS, isSolid } from './sim.js';
 import { createRenderer, LOOK_DEFAULTS } from './render.js';
 import { LEVELS } from './levels.js';
-import { createRig, updateRig, setRigMotion, RIG_DEFAULTS } from './bug.js';
+import { createRig, updateRig, setRigMotion, RIG_DEFAULTS, SPIDER_RIG } from './bug.js';
 import { stepResponse } from './dynamics.js';
 
 const VIEW_DEFAULTS = { zoom: 1, camLag: 0.12 };
-const CRITTER_RIG = {
-  ...RIG_DEFAULTS, scale: 0.55, bodyF: 4, bodyZeta: 0.8, bodyR: 0, headF: 3, stepTime: 0.07,
-};
 // Body-motion presets. "Robot" is the setup from the procedural-animation
 // video (zeta 0.5, r -2: underdamped with anticipation).
 const MOTION_PRESETS = {
@@ -36,7 +33,7 @@ const TUNABLES = [
   { key: 'stepThreshold', label: 'Step distance', unit: 'tiles', min: 0.08, max: 0.4, step: 0.01, group: 'Legs', rig: true },
   { key: 'stepTime', label: 'Step time', unit: 's', min: 0.04, max: 0.3, step: 0.01, group: 'Legs', rig: true },
   { key: 'stepHeight', label: 'Step height', unit: 'tiles', min: 0, max: 0.35, step: 0.01, group: 'Legs', rig: true },
-  { key: 'pixel', label: 'Pixel size', unit: 'px', min: 1, max: 6, step: 1, group: 'Look', look: true },
+  { key: 'pixel', label: 'Art pixel size', unit: 'world px', min: 1, max: 4, step: 0.5, group: 'Look', look: true },
   { key: 'dither', label: 'Dither', unit: '', min: 0, max: 32, step: 1, group: 'Look', look: true },
   { key: 'darkness', label: 'Darkness', unit: '', min: 0, max: 0.85, step: 0.05, group: 'Look', look: true },
   { key: 'rain', label: 'Rain', unit: '', min: 0, max: 1, step: 0.05, group: 'Look', look: true },
@@ -44,8 +41,8 @@ const TUNABLES = [
   { key: 'camLag', label: 'Camera lag', unit: 's', min: 0, max: 0.6, step: 0.01, group: 'Camera', view: true },
 ];
 
-const STORE_KEY = 'shardfield.tunables.v1';
-const BEST_KEY = 'shardfield.best.v1';
+const STORE_KEY = 'biometric.tunables.v1';
+const BEST_KEY = 'biometric.best.v1';
 
 function load(key) {
   try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
@@ -73,11 +70,11 @@ function start(snapshot) {
     const p = state.player;
     rigs = {
       player: createRig(p.x, p.y, Math.atan2(p.faceY, p.faceX), { ...rigOpts }),
-      critters: state.critters.map((c, i) => createRig(c.x, c.y, i * 1.3, CRITTER_RIG)),
+      critters: state.critters.map((c, i) => createRig(c.x, c.y, i * 1.3, SPIDER_RIG)),
     };
   }
   makeRigs();
-  let collectedSeen = 0;
+  let collectedSeen = 0, hitsSeen = 0, shake = 0;
   let started = false;
 
   function centreCamera() {
@@ -86,7 +83,7 @@ function start(snapshot) {
   }
   function restart() {
     state = createState(LEVELS[levelIndex], (Date.now() >>> 0) || 1);
-    collectedSeen = 0;
+    collectedSeen = 0; hitsSeen = 0;
     makeRigs();
     centreCamera();
     $('win').hidden = true;
@@ -315,15 +312,20 @@ function start(snapshot) {
   }
 
   // ---- HUD ---------------------------------------------------------------
-  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudBpmLabel = $('hud-bpm-label');
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudCharges = $('hud-charges'), hudKills = $('hud-kills'), hudBpmLabel = $('hud-bpm-label');
   const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
   function updateHud() {
     hudShards.textContent = `${state.collected} / ${state.shards.length}`;
     hudTime.textContent = fmtTime(state.time);
     const cd = params.dashCooldown > 0 ? 1 - state.player.dashCooldown / params.dashCooldown : 1;
     hudDash.style.setProperty('--fill', String(cd));
-    hudDash.classList.toggle('ready', state.player.dashCooldown <= 0 && !state.player.overheated);
-    hudDash.classList.toggle('blocked', state.player.overheated);
+    const pl = state.player;
+    const canDash = pl.dashCooldown <= 0 && !pl.overheated && pl.charges > 0;
+    hudDash.classList.toggle('ready', canDash);
+    hudDash.classList.toggle('blocked', pl.overheated || pl.charges === 0);
+    hudCharges.textContent = String(pl.charges);
+    hudCharges.classList.toggle('empty', pl.charges === 0);
+    hudKills.textContent = `${state.kills} / ${state.critters.length}`;
     const bpm = Math.round(60 + state.player.heat * 120);
     hudBpm.textContent = state.player.overheated ? 'HOT' : String(bpm);
     hudBpm.classList.toggle('hot', state.player.heat > 0.5);
@@ -377,6 +379,10 @@ function start(snapshot) {
       if (s) { s.burst = true; renderer.burst(s.x, s.y); }
       collectedSeen++;
     }
+    if (state.hits > hitsSeen) { hitsSeen = state.hits; renderer.hitFx(ix, iy); shake = 0.25; }
+    state.critters.forEach((c) => {
+      if (!c.alive && !c.splatted) { c.splatted = true; renderer.splat(c.x, c.y); }
+    });
     renderer.updateFx(dt, p, ix, iy, rigs.player);
     // Animation runs on real frame time; the follower clamps itself on long frames.
     const adt = Math.min(dt, 0.1);
@@ -388,6 +394,7 @@ function start(snapshot) {
     });
     updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy }, blocked);
     state.critters.forEach((c, i) => {
+      if (!c.alive) return; // corpses stay where they fell
       const cx = c.px + (c.x - c.px) * view.alpha, cy = c.py + (c.y - c.py) * view.alpha;
       updateRig(rigs.critters[i], adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, blocked);
     });
@@ -397,13 +404,17 @@ function start(snapshot) {
     view.camX += (target.x - view.camX) * k;
     view.camY += (target.y - 10 - view.camY) * k;
     const fit = Math.min(renderer.size.w, renderer.size.h) / 560;
-    renderer.draw(state, { ...view, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, rigs, clock, look, dt);
+    shake = Math.max(0, shake - dt);
+    const jolt = shake > 0 ? Math.sin(clock * 90) * 4 * (shake / 0.25) : 0;
+    renderer.draw(state, { ...view, camX: view.camX + jolt, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, rigs, clock, look, dt);
     updateHud();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
   window.claude?.hot?.snapshot?.(() => ({ tune: tuneData() }));
+  // Test hook: open the page with #debug to reach the live state from a script.
+  if (location.hash === '#debug') window.biometricDebug = { get state() { return state; }, params, look, view };
 }
 
 const hot = window.claude?.hot;

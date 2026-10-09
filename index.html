@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- page:start -->
-<title>Shardfield Prototype</title>
+<title>Biometric</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
@@ -50,6 +50,8 @@ body {
 #hud-dash.ready::after { background: var(--visor); }
 #hud-dash.blocked::after { background: var(--hot); }
 #hud-bpm { transition: color 0.2s; }
+#hud-charges { color: var(--visor); }
+#hud-charges.empty { color: var(--hot); }
 #hud-bpm.hot { color: var(--hot); }
 .motion { display: grid; gap: 8px; }
 .motion canvas { width: 100%; height: auto; aspect-ratio: 536 / 200; background: var(--night); border: 1px solid var(--line); border-radius: 4px; }
@@ -144,9 +146,11 @@ body {
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Shardfield<small>Prototype 0.3 · Pump Yard</small></div>
+  <div class="brand">Biometric<small>Prototype 0.4 · Pump Yard</small></div>
   <div class="stats">
     <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Cells</span></div>
+    <div class="stat"><b id="hud-charges" class="charges">1</b><span>Charges</span></div>
+    <div class="stat"><b id="hud-kills">0 / 0</b><span>Spiders</span></div>
     <div class="stat"><b id="hud-time">0:00.00</b><span>Time</span></div>
     <div class="stat"><b id="hud-bpm">60</b><span id="hud-bpm-label">BPM</span></div>
     <div class="stat"><div id="hud-dash" class="ready"></div><span>Dash</span></div>
@@ -159,10 +163,10 @@ body {
 <div id="stick" hidden></div>
 
 <section id="intro">
-  <h1>Scavenge the cells</h1>
+  <h1>Biometric</h1>
   <p>You are a small mechanical bug in a drowned pump yard. <span id="intro-count">Nine</span> battery cells lie in the rain. Collect them all as fast as you can.</p>
-  <p>Dashing heats your core. Hit the limit and you overheat: no dashing and a slow crawl until you cool down. The beetles keep their distance.</p>
-  <p>Keyboard, gamepad or touch. On a phone, drag on the left to move and tap Dash.</p>
+  <p>Every dash burns one charge, and every cell you pick up gives one back. Dash straight through a spider to kill it.</p>
+  <p>Spiders are cowards alone. When two stand together an arc crackles between them and they lunge. A hit spikes your heat; too hot and you overheat.</p>
   <p class="go">Press a move key or tap to start.</p>
 </section>
 

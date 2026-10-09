@@ -58,10 +58,10 @@ test('leg IK: bones keep their length and the knee bends up', () => {
 });
 
 // Walk a rig along a scripted path at `speed` and collect gait statistics.
-function walk(speed, seconds = 6, dt = 1 / 60) {
-  const rig = createRig(0, 0, 0, RIG_DEFAULTS);
+function walk(speed, seconds = 6, dt = 1 / 60, opts = RIG_DEFAULTS) {
+  const rig = createRig(0, 0, 0, opts);
   let x = 0, y = 0, worstReach = 0, maxAir = 0, steps = 0, overReach = 0, frames = 0;
-  const reach = (RIG_DEFAULTS.thigh + RIG_DEFAULTS.shin) * RIG_DEFAULTS.scale;
+  const reach = (opts.thigh + opts.shin) * opts.scale;
   for (let t = 0; t < seconds; t += dt) {
     const a = t * 0.6; // gentle curve, so turning is covered too
     const vx = Math.cos(a) * speed, vy = Math.sin(a) * speed;
@@ -109,4 +109,16 @@ test('standing still: feet come to rest and stop stepping', () => {
   }
   assert.equal(steps, 0);
   assert.ok(rig.legs.every((l) => l.t === 1 && l.lift === 0));
+});
+
+test('spider rig: 8 legs, never more than 4 feet in the air, feet within reach', async () => {
+  const { SPIDER_RIG } = await import('../src/bug.js');
+  const rig = createRig(0, 0, 0, SPIDER_RIG);
+  assert.equal(rig.legs.length, 8);
+  for (const speed of [1, 3.2, 6.5]) {
+    const g = walk(speed, 6, 1 / 60, SPIDER_RIG);
+    assert.ok(g.maxAir <= 4, `speed ${speed}: ${g.maxAir} in the air`);
+    assert.ok(g.steps > speed * 4, `speed ${speed}: ${g.steps} steps`);
+    assert.ok(g.overReachShare < 0.05, `speed ${speed}: over reach ${(g.overReachShare * 100).toFixed(1)}%`);
+  }
 });

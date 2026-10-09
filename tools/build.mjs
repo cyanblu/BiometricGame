@@ -1,4 +1,4 @@
-// Builds dist/shardfield.html: one self-contained page (no ES module imports),
+// Builds dist/biometric.html: one self-contained page (no ES module imports),
 // in the shape the claude.ai Artifact viewer expects (no doctype/html/head/body).
 // Modules are concatenated in dependency order; import lines and `export`
 // keywords are stripped, so top-level names must stay unique across files.
@@ -23,5 +23,5 @@ const page = html.slice(html.indexOf('<!-- page:start -->') + 19, html.indexOf('
   .replace('<script type="module" src="src/main.js"></script>', `<script>\n(() => {\n${js}\n})();\n</script>`);
 
 mkdirSync('dist', { recursive: true });
-writeFileSync('dist/shardfield.html', page.trim() + '\n');
-console.log(`dist/shardfield.html: ${page.length} bytes`);
+writeFileSync('dist/biometric.html', page.trim() + '\n');
+console.log(`dist/biometric.html: ${page.length} bytes`);

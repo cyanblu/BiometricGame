@@ -21,11 +21,28 @@ export const DEFAULT_PARAMS = {
   heatCool: 0.3,
   overheatRecover: 0.35, // overheated until heat cools to this
   overheatSpeed: 0.65, // top speed multiplier while overheated
+  startCharges: 1, // dash charges at the start; each battery cell adds one
   critterRadius: 0.18,
   critterSpeed: 1.1,
   critterFleeSpeed: 3.2,
   critterAccel: 12,
   critterFear: 2.2,
+  // Spider pack hunting: they only attack as a pair standing next to each other.
+  aggroRange: 4.5, // player this close: spiders want to attack
+  pairRange: 1.3, // two spiders this close form a pair
+  regroupRange: 6, // a lone spider walks to a partner this close
+  regroupSpeed: 1.8,
+  windup: 0.45, // pair charges an arc, standing still
+  lungeSpeed: 6.5,
+  lungeTime: 0.35,
+  thrownSpeed: 5,
+  thrownTime: 0.5,
+  attackCooldown: 3, // after being thrown, before a spider can pair up again
+  killMargin: 0.12, // extra reach of a dash against spiders
+  hitHeat: 0.45,
+  knockback: 7,
+  stunTime: 0.35,
+  invulnTime: 0.8,
 };
 
 // Seeded PRNG (mulberry32) kept in the state, so runs stay reproducible.
@@ -51,7 +68,7 @@ export function parseLevel(level) {
       if (c === '#') solid[ty * w + tx] = 1;
       else if (c === 'P') spawn = { x: tx + 0.5, y: ty + 0.5 };
       else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5 });
-      else if (c === 'b') critters.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === 'b' || c === 's') critters.push({ x: tx + 0.5, y: ty + 0.5 });
     }
   }
   return { name: level.name, w, h, solid, shards, critters, spawn };
@@ -62,14 +79,18 @@ export function isSolid(map, tx, ty) {
   return map.solid[ty * map.w + tx] === 1;
 }
 
-export function createState(level, seed = 1) {
+export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
   const map = parseLevel(level);
   return {
     seed: seed >>> 0,
     critters: map.critters.map((c, i) => ({
       x: c.x, y: c.y, px: c.x, py: c.y, vx: 0, vy: 0,
       dirX: 0, dirY: 0, timer: 0.3 * i, fleeing: false,
+      alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
+      lungeX: 0, lungeY: 0, stateTime: 0,
     })),
+    kills: 0,
+    hits: 0,
     map,
     player: {
       x: map.spawn.x, y: map.spawn.y,
@@ -80,6 +101,8 @@ export function createState(level, seed = 1) {
       dashX: 0, dashY: 0,
       heat: 0, // 0..1, rises with each dash, cools over time
       overheated: false, // set when heat hits 1: no dash, slower
+      charges: params.startCharges, // each dash spends one
+      stun: 0, invuln: 0,
     },
     shards: map.shards.map((s) => ({ x: s.x, y: s.y, taken: false })),
     collected: 0,
@@ -181,7 +204,10 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   const r = params.radius;
   p.px = p.x; p.py = p.y;
 
-  const dir = inputToWorld(input.x || 0, input.y || 0, params.diagonalMode);
+  p.stun = Math.max(0, p.stun - dt);
+  p.invuln = Math.max(0, p.invuln - dt);
+  const stunned = p.stun > 0;
+  const dir = stunned ? { x: 0, y: 0, mag: 0 } : inputToWorld(input.x || 0, input.y || 0, params.diagonalMode);
   if (dir.mag > 0) {
     p.faceX = dir.x / dir.mag;
     p.faceY = dir.y / dir.mag;
@@ -191,7 +217,8 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   p.dashBuffer = Math.max(0, p.dashBuffer - dt);
   if (input.dash) p.dashBuffer = params.dashBuffer;
 
-  if (p.dashBuffer > 0 && p.dashCooldown <= 0 && p.dashTime <= 0 && !p.overheated) {
+  if (p.dashBuffer > 0 && p.dashCooldown <= 0 && p.dashTime <= 0 && !p.overheated && !stunned && p.charges > 0) {
+    p.charges--;
     p.dashX = p.faceX; p.dashY = p.faceY;
     p.dashTime = params.dashDuration;
     p.dashCooldown = params.dashCooldown;
@@ -205,7 +232,8 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   const topSpeed = params.maxSpeed * (p.overheated ? params.overheatSpeed : 1);
 
   let mvx, mvy;
-  if (p.dashTime > 0) {
+  const dashing = p.dashTime > 0;
+  if (dashing) {
     // Blend the step in which the dash ends, so dash distance does not
     // depend on how the duration lines up with the step size.
     const inDash = Math.min(dt, p.dashTime);
@@ -238,10 +266,11 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     if (Math.hypot(s.x - p.x, s.y - p.y) <= reach) {
       s.taken = true;
       state.collected++;
+      p.charges++;
     }
   }
 
-  for (const c of state.critters) stepCritter(state, c, params, dt);
+  stepSpiders(state, params, dt, dashing);
 
   if (!state.won) {
     state.time += dt;
@@ -251,38 +280,144 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   return state;
 }
 
-// Critters wander, pause, and run from the player when it comes close.
-function stepCritter(state, c, params, dt) {
-  const p = state.player;
-  c.px = c.x; c.py = c.y;
-  const dx = c.x - p.x, dy = c.y - p.y;
-  const d = Math.hypot(dx, dy);
-  let speed;
-  if (d < params.critterFear) {
-    c.fleeing = true;
-    const l = d || 1;
-    c.dirX = dx / l; c.dirY = dy / l;
-    speed = params.critterFleeSpeed;
-    c.timer = 0.4; // keep running a little after leaving the fear radius
-  } else {
-    c.timer -= dt;
-    if (c.timer <= 0) {
-      c.fleeing = false;
-      if (rand(state) < 0.3) {
-        c.dirX = 0; c.dirY = 0; // pause
-      } else {
-        const a = rand(state) * Math.PI * 2;
-        c.dirX = Math.cos(a); c.dirY = Math.sin(a);
-      }
-      c.timer = 0.8 + rand(state) * 1.8;
-    }
-    speed = c.fleeing ? params.critterFleeSpeed : params.critterSpeed;
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+// A spider that is free to pair up for an attack.
+const canPair = (c) => c.alive && c.mode === 'wander' && c.cooldown <= 0;
+
+function nearestPartner(state, c, range) {
+  let best = null, bestD = range;
+  for (const o of state.critters) {
+    if (o === c || !canPair(o)) continue;
+    const d = dist(c, o);
+    if (d <= bestD) { best = o; bestD = d; }
   }
-  [c.vx, c.vy] = approach(c.vx, c.vy, c.dirX * speed, c.dirY * speed, params.critterAccel * dt);
-  const want = Math.hypot(c.vx, c.vy);
-  move(state.map, c, { vx: c.vx, vy: c.vy }, dt, params.critterRadius);
-  // Pressed against a wall: pick a new direction on the next step.
-  if (want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
+  return best;
+}
+
+function hitPlayer(state, c, params) {
+  const p = state.player;
+  if (p.invuln > 0) return;
+  const dx = p.x - c.x, dy = p.y - c.y, l = Math.hypot(dx, dy) || 1;
+  p.vx = (dx / l) * params.knockback; p.vy = (dy / l) * params.knockback;
+  p.stun = params.stunTime;
+  p.invuln = params.invulnTime;
+  p.dashBuffer = 0;
+  p.heat = Math.min(1, p.heat + params.hitHeat);
+  if (p.heat >= 1) p.overheated = true;
+  state.hits++;
+}
+
+function killSpider(state, c) {
+  c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0;
+  state.kills++;
+}
+
+// Spiders: alone they wander, flee, or walk to a partner. Two free spiders
+// standing next to each other near the player wind up together, lunge, and
+// are thrown apart afterwards, then can't pair again for attackCooldown.
+// A dashing player kills any spider it touches.
+function stepSpiders(state, params, dt, dashing) {
+  const p = state.player;
+  const contact = params.radius + params.critterRadius;
+  for (const c of state.critters) {
+    c.px = c.x; c.py = c.y;
+    if (!c.alive) continue;
+    c.cooldown = Math.max(0, c.cooldown - dt);
+  }
+
+  // Pair up, in index order so the result is deterministic.
+  state.critters.forEach((c, i) => {
+    if (!canPair(c) || dist(c, p) > params.aggroRange) return;
+    const o = nearestPartner(state, c, params.pairRange);
+    if (!o) return;
+    const j = state.critters.indexOf(o);
+    for (const [a, partner, role] of [[c, j, 0], [o, i, 1]]) {
+      a.mode = 'windup'; a.stateTime = params.windup; a.stateTotal = params.windup;
+      a.partner = partner; a.role = role; a.hitDone = false;
+    }
+  });
+
+  for (const c of state.critters) {
+    if (!c.alive) continue;
+    const dx = c.x - p.x, dy = c.y - p.y;
+    const d = Math.hypot(dx, dy) || 1;
+    let tx = 0, ty = 0, accel = params.critterAccel;
+
+    if (c.mode === 'windup') {
+      c.dirX = -dx / d; c.dirY = -dy / d; // face the player
+      c.stateTime -= dt;
+      if (c.stateTime <= 0) {
+        c.mode = 'lunge'; c.stateTime = params.lungeTime;
+        c.lungeX = c.dirX; c.lungeY = c.dirY;
+      }
+    } else if (c.mode === 'lunge') {
+      c.vx = c.lungeX * params.lungeSpeed; c.vy = c.lungeY * params.lungeSpeed;
+      tx = c.vx; ty = c.vy; accel = Infinity;
+      c.stateTime -= dt;
+      if (c.stateTime <= 0) {
+        // Thrown off to opposite sides, partly backwards.
+        const side = c.role ? -1 : 1;
+        let ux = -c.lungeY * side * 0.8 - c.lungeX * 0.6;
+        let uy = c.lungeX * side * 0.8 - c.lungeY * 0.6;
+        const ul = Math.hypot(ux, uy) || 1;
+        ux /= ul; uy /= ul;
+        c.mode = 'thrown'; c.stateTime = params.thrownTime;
+        c.vx = ux * params.thrownSpeed; c.vy = uy * params.thrownSpeed;
+        accel = params.critterAccel; // the lunge's instant velocity must not cancel the throw
+      }
+    } else if (c.mode === 'thrown') {
+      c.stateTime -= dt;
+      if (c.stateTime <= 0) {
+        c.mode = 'wander'; c.partner = -1; c.cooldown = params.attackCooldown; c.timer = 0;
+      }
+    } else {
+      // Wander mode.
+      const partner = c.cooldown <= 0 && d < params.aggroRange ? nearestPartner(state, c, params.regroupRange) : null;
+      if (partner) {
+        const px = partner.x - c.x, py = partner.y - c.y, pl = Math.hypot(px, py) || 1;
+        c.dirX = px / pl; c.dirY = py / pl; c.fleeing = false; c.timer = 0.2;
+        tx = c.dirX * params.regroupSpeed; ty = c.dirY * params.regroupSpeed;
+      } else {
+        let speed;
+        if (d < params.critterFear) {
+          c.fleeing = true;
+          c.dirX = dx / d; c.dirY = dy / d;
+          speed = params.critterFleeSpeed;
+          c.timer = 0.4; // keep running a little after leaving the fear radius
+        } else {
+          c.timer -= dt;
+          if (c.timer <= 0) {
+            c.fleeing = false;
+            if (rand(state) < 0.3) {
+              c.dirX = 0; c.dirY = 0; // pause
+            } else {
+              const a = rand(state) * Math.PI * 2;
+              c.dirX = Math.cos(a); c.dirY = Math.sin(a);
+            }
+            c.timer = 0.8 + rand(state) * 1.8;
+          }
+          speed = c.fleeing ? params.critterFleeSpeed : params.critterSpeed;
+        }
+        tx = c.dirX * speed; ty = c.dirY * speed;
+      }
+    }
+
+    if (c.mode !== 'lunge') {
+      if (c.mode === 'windup' || c.mode === 'thrown') { tx = 0; ty = 0; }
+      [c.vx, c.vy] = approach(c.vx, c.vy, tx, ty, accel * dt);
+    }
+    const want = Math.hypot(c.vx, c.vy);
+    move(state.map, c, { vx: c.vx, vy: c.vy }, dt, params.critterRadius);
+    // Pressed against a wall while wandering: pick a new direction next step.
+    if (c.mode === 'wander' && want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
+
+    if (dashing && dist(c, p) < contact + params.killMargin) { killSpider(state, c); continue; }
+    if (c.mode === 'lunge' && !c.hitDone && dist(c, p) < contact + 0.05) {
+      c.hitDone = true;
+      hitPlayer(state, c, params);
+    }
+  }
 }
 
 // Smallest gap between the player circle and any wall; negative = overlap.

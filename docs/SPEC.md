@@ -1,11 +1,11 @@
-# Shardfield behaviour spec (v0.3)
+# Biometric behaviour spec (v0.4)
 
 Premise: you control a small mechanical bug in a world of living bugs. The
 bug's vital signs (biometrics) are part of play and show up in how it moves.
 Setting: a grimy, rain-soaked industrial ruin with failing electrics (think
 Rain World). The pickups are small battery cells.
 
-Working title. This file is the reference the code is tested against. When a
+This file is the reference the code is tested against. When a
 number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
 `test/sim.test.js` with it.
 
@@ -30,6 +30,7 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
 | Dash duration | 0.14 | s |
 | Dash cooldown (from dash start) | 0.55 | s |
 | Dash input buffer | 0.10 | s |
+| Charges at start | 1 | |
 
 ### Movement
 
@@ -47,6 +48,8 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
 
 ### Dash
 
+0. Every dash spends one **charge**. You start with `startCharges` (1); each
+   battery cell picked up adds one; there is no cap. No charge, no dash.
 1. A dash press is remembered for the buffer window (0.10 s). If the dash
    becomes available inside that window, it fires then.
 2. Dash direction is the current input direction, or the facing direction
@@ -130,23 +133,45 @@ blow up or jitter.
 6. Presets in the panel: Default, Robot (2 / 0.5 / −2, from the
    procedural-animation video), Snappy, Springy, Heavy.
 
-## Critters
+## Spiders
 
 | Property | Default | Unit |
 |---|---|---|
 | Radius | 0.18 | tiles |
-| Wander speed | 1.1 | tiles/s |
-| Flee speed | 3.2 | tiles/s |
-| Fear radius | 2.2 | tiles |
+| Wander / flee speed | 1.1 / 3.2 | tiles/s |
+| Fear radius (alone) | 2.2 | tiles |
+| Aggro range | 4.5 | tiles |
+| Pair range | 1.3 | tiles |
+| Regroup range / speed | 6 / 1.8 | tiles, tiles/s |
+| Wind-up | 0.45 | s |
+| Lunge speed / time | 6.5 / 0.35 | tiles/s, s |
+| Thrown speed / time | 5 / 0.5 | tiles/s, s |
+| Attack cooldown | 3 | s |
+| Hit: heat / knockback / stun / invulnerable | 0.45 / 7 / 0.35 / 0.8 | heat, tiles/s, s, s |
+| Dash kill reach (beyond touching) | 0.12 | tiles |
 
-1. Spawn at `b` in the level map. Movement is in the simulation, using a
-   seeded PRNG stored in the state, so a run is reproducible from its seed.
-2. Every 0.8–2.6 s a critter picks a new random heading, or pauses (30 %).
-3. Inside the fear radius it runs straight away from the player, and keeps
-   running for 0.4 s after leaving it.
-4. Same wall collision as the player. A critter pressed against a wall picks
-   a new direction.
-5. Drawn with the same rig at 0.55 scale.
+1. Spawn at `b` or `s` in the level map. Movement is in the simulation with
+   a seeded PRNG, so a run is reproducible from its seed.
+2. **Alone they are cowards.** A spider with no partner wanders (new heading
+   or a pause every 0.8–2.6 s) and runs from the player inside the fear radius.
+   If the player is within aggro range and another free spider is within
+   regroup range, it walks to that spider instead.
+3. **They attack only in pairs.** Two free spiders (wandering, no cooldown)
+   within pair range of each other, with the player within aggro range of
+   one of them, form a pair. Both stop and wind up for 0.45 s; a crackling
+   electric arc links them and their eyes glow. A lone spider never attacks.
+4. Then both lunge in a straight line at where the player was (6.5 tiles/s for
+   0.35 s). The first touch hits the player: heat +0.45 (can overheat),
+   knockback, 0.35 s stun (no input, no dash), 0.8 s invulnerability.
+5. When the lunge ends, the two are **thrown apart** to opposite sides and
+   partly backwards (5 tiles/s, no control for 0.5 s), then cannot pair up for
+   3 s. So a pair can't strike again straight away.
+6. If one dies during the wind-up, the other still lunges alone.
+7. **A dash kills a spider** it touches (within the radii plus 0.12). A dash
+   beats a lunge: a dashing player is not hit. Walking into one does nothing.
+   Dead spiders stay where they fell, legs curled.
+8. Drawn with eight legs (two alternating groups of four, at most four feet
+   in the air), a large abdomen and eyes that always glint faintly.
 
 ## Battery cells
 
@@ -158,9 +183,11 @@ blow up or jitter.
 
 ## Look
 
-1. The world is drawn into an offscreen canvas at `1 / pixel size` of the
-   screen resolution (default pixel size 3), lit, then scaled up without
-   smoothing. The camera snaps to whole low-res pixels.
+1. The world is drawn into an offscreen canvas at a fixed art resolution: one
+   art pixel = `pixel` world pixels (default 2, so a tile is 32 art pixels
+   wide). **Zoom never changes the art**; it only changes the whole-number
+   factor the frame is scaled up by (no smoothing), so zoom moves in steps.
+   The camera snaps to whole art pixels.
 2. Every pixel is then snapped to the fixed palette in `src/pixel.js`
    (`COLORS`), with 4×4 ordered dithering (default strength 6). All palette
    colours stay reachable (tested).
@@ -168,10 +195,10 @@ blow up or jitter.
    lamps, some of which flicker; battery glow and arcs; the bug's back light,
    head lamp and body glow), plus a coloured additive glow.
 4. Rain in screen space, drawn before lighting so it shows near lights.
-5. Look settings are tunable: pixel size, dither, darkness, rain, palette on/off.
+5. Look settings are tunable: art pixel size, dither, darkness, rain, palette on/off.
 
 ## Not decided yet
 
-- What the goal is beyond collecting cells (do cells charge or cool the bug?).
-- How the player interacts with other bugs beyond scaring them.
+- A fail state: hits only cost heat, time and control for now; no health or death.
+- Whether killing spiders matters for winning (it doesn't yet).
 - Art direction beyond placeholder shapes.

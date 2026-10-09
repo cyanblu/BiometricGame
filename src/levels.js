@@ -1,4 +1,4 @@
-// Level legend: '#' wall, '.' floor, 'P' player spawn, '*' shard, 'b' critter.
+// Level legend: '#' wall, '.' floor, 'P' player spawn, '*' battery cell, 'b' or 's' spider.
 export const LEVELS = [
   {
     name: 'Pump Yard',

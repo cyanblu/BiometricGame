@@ -1,4 +1,4 @@
-<title>Shardfield Prototype</title>
+<title>Biometric</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
@@ -44,6 +44,8 @@ body {
 #hud-dash.ready::after { background: var(--visor); }
 #hud-dash.blocked::after { background: var(--hot); }
 #hud-bpm { transition: color 0.2s; }
+#hud-charges { color: var(--visor); }
+#hud-charges.empty { color: var(--hot); }
 #hud-bpm.hot { color: var(--hot); }
 .motion { display: grid; gap: 8px; }
 .motion canvas { width: 100%; height: auto; aspect-ratio: 536 / 200; background: var(--night); border: 1px solid var(--line); border-radius: 4px; }
@@ -136,9 +138,11 @@ body {
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Shardfield<small>Prototype 0.3 · Pump Yard</small></div>
+  <div class="brand">Biometric<small>Prototype 0.4 · Pump Yard</small></div>
   <div class="stats">
     <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Cells</span></div>
+    <div class="stat"><b id="hud-charges" class="charges">1</b><span>Charges</span></div>
+    <div class="stat"><b id="hud-kills">0 / 0</b><span>Spiders</span></div>
     <div class="stat"><b id="hud-time">0:00.00</b><span>Time</span></div>
     <div class="stat"><b id="hud-bpm">60</b><span id="hud-bpm-label">BPM</span></div>
     <div class="stat"><div id="hud-dash" class="ready"></div><span>Dash</span></div>
@@ -151,10 +155,10 @@ body {
 <div id="stick" hidden></div>
 
 <section id="intro">
-  <h1>Scavenge the cells</h1>
+  <h1>Biometric</h1>
   <p>You are a small mechanical bug in a drowned pump yard. <span id="intro-count">Nine</span> battery cells lie in the rain. Collect them all as fast as you can.</p>
-  <p>Dashing heats your core. Hit the limit and you overheat: no dashing and a slow crawl until you cool down. The beetles keep their distance.</p>
-  <p>Keyboard, gamepad or touch. On a phone, drag on the left to move and tap Dash.</p>
+  <p>Every dash burns one charge, and every cell you pick up gives one back. Dash straight through a spider to kill it.</p>
+  <p>Spiders are cowards alone. When two stand together an arc crackles between them and they lunge. A hit spikes your heat; too hot and you overheat.</p>
   <p class="go">Press a move key or tap to start.</p>
 </section>
 
@@ -204,11 +208,28 @@ const DEFAULT_PARAMS = {
   heatCool: 0.3,
   overheatRecover: 0.35, // overheated until heat cools to this
   overheatSpeed: 0.65, // top speed multiplier while overheated
+  startCharges: 1, // dash charges at the start; each battery cell adds one
   critterRadius: 0.18,
   critterSpeed: 1.1,
   critterFleeSpeed: 3.2,
   critterAccel: 12,
   critterFear: 2.2,
+  // Spider pack hunting: they only attack as a pair standing next to each other.
+  aggroRange: 4.5, // player this close: spiders want to attack
+  pairRange: 1.3, // two spiders this close form a pair
+  regroupRange: 6, // a lone spider walks to a partner this close
+  regroupSpeed: 1.8,
+  windup: 0.45, // pair charges an arc, standing still
+  lungeSpeed: 6.5,
+  lungeTime: 0.35,
+  thrownSpeed: 5,
+  thrownTime: 0.5,
+  attackCooldown: 3, // after being thrown, before a spider can pair up again
+  killMargin: 0.12, // extra reach of a dash against spiders
+  hitHeat: 0.45,
+  knockback: 7,
+  stunTime: 0.35,
+  invulnTime: 0.8,
 };
 
 // Seeded PRNG (mulberry32) kept in the state, so runs stay reproducible.
@@ -234,7 +255,7 @@ function parseLevel(level) {
       if (c === '#') solid[ty * w + tx] = 1;
       else if (c === 'P') spawn = { x: tx + 0.5, y: ty + 0.5 };
       else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5 });
-      else if (c === 'b') critters.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === 'b' || c === 's') critters.push({ x: tx + 0.5, y: ty + 0.5 });
     }
   }
   return { name: level.name, w, h, solid, shards, critters, spawn };
@@ -245,14 +266,18 @@ function isSolid(map, tx, ty) {
   return map.solid[ty * map.w + tx] === 1;
 }
 
-function createState(level, seed = 1) {
+function createState(level, seed = 1, params = DEFAULT_PARAMS) {
   const map = parseLevel(level);
   return {
     seed: seed >>> 0,
     critters: map.critters.map((c, i) => ({
       x: c.x, y: c.y, px: c.x, py: c.y, vx: 0, vy: 0,
       dirX: 0, dirY: 0, timer: 0.3 * i, fleeing: false,
+      alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
+      lungeX: 0, lungeY: 0, stateTime: 0,
     })),
+    kills: 0,
+    hits: 0,
     map,
     player: {
       x: map.spawn.x, y: map.spawn.y,
@@ -263,6 +288,8 @@ function createState(level, seed = 1) {
       dashX: 0, dashY: 0,
       heat: 0, // 0..1, rises with each dash, cools over time
       overheated: false, // set when heat hits 1: no dash, slower
+      charges: params.startCharges, // each dash spends one
+      stun: 0, invuln: 0,
     },
     shards: map.shards.map((s) => ({ x: s.x, y: s.y, taken: false })),
     collected: 0,
@@ -364,7 +391,10 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   const r = params.radius;
   p.px = p.x; p.py = p.y;
 
-  const dir = inputToWorld(input.x || 0, input.y || 0, params.diagonalMode);
+  p.stun = Math.max(0, p.stun - dt);
+  p.invuln = Math.max(0, p.invuln - dt);
+  const stunned = p.stun > 0;
+  const dir = stunned ? { x: 0, y: 0, mag: 0 } : inputToWorld(input.x || 0, input.y || 0, params.diagonalMode);
   if (dir.mag > 0) {
     p.faceX = dir.x / dir.mag;
     p.faceY = dir.y / dir.mag;
@@ -374,7 +404,8 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   p.dashBuffer = Math.max(0, p.dashBuffer - dt);
   if (input.dash) p.dashBuffer = params.dashBuffer;
 
-  if (p.dashBuffer > 0 && p.dashCooldown <= 0 && p.dashTime <= 0 && !p.overheated) {
+  if (p.dashBuffer > 0 && p.dashCooldown <= 0 && p.dashTime <= 0 && !p.overheated && !stunned && p.charges > 0) {
+    p.charges--;
     p.dashX = p.faceX; p.dashY = p.faceY;
     p.dashTime = params.dashDuration;
     p.dashCooldown = params.dashCooldown;
@@ -388,7 +419,8 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   const topSpeed = params.maxSpeed * (p.overheated ? params.overheatSpeed : 1);
 
   let mvx, mvy;
-  if (p.dashTime > 0) {
+  const dashing = p.dashTime > 0;
+  if (dashing) {
     // Blend the step in which the dash ends, so dash distance does not
     // depend on how the duration lines up with the step size.
     const inDash = Math.min(dt, p.dashTime);
@@ -421,10 +453,11 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     if (Math.hypot(s.x - p.x, s.y - p.y) <= reach) {
       s.taken = true;
       state.collected++;
+      p.charges++;
     }
   }
 
-  for (const c of state.critters) stepCritter(state, c, params, dt);
+  stepSpiders(state, params, dt, dashing);
 
   if (!state.won) {
     state.time += dt;
@@ -434,38 +467,144 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   return state;
 }
 
-// Critters wander, pause, and run from the player when it comes close.
-function stepCritter(state, c, params, dt) {
-  const p = state.player;
-  c.px = c.x; c.py = c.y;
-  const dx = c.x - p.x, dy = c.y - p.y;
-  const d = Math.hypot(dx, dy);
-  let speed;
-  if (d < params.critterFear) {
-    c.fleeing = true;
-    const l = d || 1;
-    c.dirX = dx / l; c.dirY = dy / l;
-    speed = params.critterFleeSpeed;
-    c.timer = 0.4; // keep running a little after leaving the fear radius
-  } else {
-    c.timer -= dt;
-    if (c.timer <= 0) {
-      c.fleeing = false;
-      if (rand(state) < 0.3) {
-        c.dirX = 0; c.dirY = 0; // pause
-      } else {
-        const a = rand(state) * Math.PI * 2;
-        c.dirX = Math.cos(a); c.dirY = Math.sin(a);
-      }
-      c.timer = 0.8 + rand(state) * 1.8;
-    }
-    speed = c.fleeing ? params.critterFleeSpeed : params.critterSpeed;
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+// A spider that is free to pair up for an attack.
+const canPair = (c) => c.alive && c.mode === 'wander' && c.cooldown <= 0;
+
+function nearestPartner(state, c, range) {
+  let best = null, bestD = range;
+  for (const o of state.critters) {
+    if (o === c || !canPair(o)) continue;
+    const d = dist(c, o);
+    if (d <= bestD) { best = o; bestD = d; }
   }
-  [c.vx, c.vy] = approach(c.vx, c.vy, c.dirX * speed, c.dirY * speed, params.critterAccel * dt);
-  const want = Math.hypot(c.vx, c.vy);
-  move(state.map, c, { vx: c.vx, vy: c.vy }, dt, params.critterRadius);
-  // Pressed against a wall: pick a new direction on the next step.
-  if (want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
+  return best;
+}
+
+function hitPlayer(state, c, params) {
+  const p = state.player;
+  if (p.invuln > 0) return;
+  const dx = p.x - c.x, dy = p.y - c.y, l = Math.hypot(dx, dy) || 1;
+  p.vx = (dx / l) * params.knockback; p.vy = (dy / l) * params.knockback;
+  p.stun = params.stunTime;
+  p.invuln = params.invulnTime;
+  p.dashBuffer = 0;
+  p.heat = Math.min(1, p.heat + params.hitHeat);
+  if (p.heat >= 1) p.overheated = true;
+  state.hits++;
+}
+
+function killSpider(state, c) {
+  c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0;
+  state.kills++;
+}
+
+// Spiders: alone they wander, flee, or walk to a partner. Two free spiders
+// standing next to each other near the player wind up together, lunge, and
+// are thrown apart afterwards, then can't pair again for attackCooldown.
+// A dashing player kills any spider it touches.
+function stepSpiders(state, params, dt, dashing) {
+  const p = state.player;
+  const contact = params.radius + params.critterRadius;
+  for (const c of state.critters) {
+    c.px = c.x; c.py = c.y;
+    if (!c.alive) continue;
+    c.cooldown = Math.max(0, c.cooldown - dt);
+  }
+
+  // Pair up, in index order so the result is deterministic.
+  state.critters.forEach((c, i) => {
+    if (!canPair(c) || dist(c, p) > params.aggroRange) return;
+    const o = nearestPartner(state, c, params.pairRange);
+    if (!o) return;
+    const j = state.critters.indexOf(o);
+    for (const [a, partner, role] of [[c, j, 0], [o, i, 1]]) {
+      a.mode = 'windup'; a.stateTime = params.windup; a.stateTotal = params.windup;
+      a.partner = partner; a.role = role; a.hitDone = false;
+    }
+  });
+
+  for (const c of state.critters) {
+    if (!c.alive) continue;
+    const dx = c.x - p.x, dy = c.y - p.y;
+    const d = Math.hypot(dx, dy) || 1;
+    let tx = 0, ty = 0, accel = params.critterAccel;
+
+    if (c.mode === 'windup') {
+      c.dirX = -dx / d; c.dirY = -dy / d; // face the player
+      c.stateTime -= dt;
+      if (c.stateTime <= 0) {
+        c.mode = 'lunge'; c.stateTime = params.lungeTime;
+        c.lungeX = c.dirX; c.lungeY = c.dirY;
+      }
+    } else if (c.mode === 'lunge') {
+      c.vx = c.lungeX * params.lungeSpeed; c.vy = c.lungeY * params.lungeSpeed;
+      tx = c.vx; ty = c.vy; accel = Infinity;
+      c.stateTime -= dt;
+      if (c.stateTime <= 0) {
+        // Thrown off to opposite sides, partly backwards.
+        const side = c.role ? -1 : 1;
+        let ux = -c.lungeY * side * 0.8 - c.lungeX * 0.6;
+        let uy = c.lungeX * side * 0.8 - c.lungeY * 0.6;
+        const ul = Math.hypot(ux, uy) || 1;
+        ux /= ul; uy /= ul;
+        c.mode = 'thrown'; c.stateTime = params.thrownTime;
+        c.vx = ux * params.thrownSpeed; c.vy = uy * params.thrownSpeed;
+        accel = params.critterAccel; // the lunge's instant velocity must not cancel the throw
+      }
+    } else if (c.mode === 'thrown') {
+      c.stateTime -= dt;
+      if (c.stateTime <= 0) {
+        c.mode = 'wander'; c.partner = -1; c.cooldown = params.attackCooldown; c.timer = 0;
+      }
+    } else {
+      // Wander mode.
+      const partner = c.cooldown <= 0 && d < params.aggroRange ? nearestPartner(state, c, params.regroupRange) : null;
+      if (partner) {
+        const px = partner.x - c.x, py = partner.y - c.y, pl = Math.hypot(px, py) || 1;
+        c.dirX = px / pl; c.dirY = py / pl; c.fleeing = false; c.timer = 0.2;
+        tx = c.dirX * params.regroupSpeed; ty = c.dirY * params.regroupSpeed;
+      } else {
+        let speed;
+        if (d < params.critterFear) {
+          c.fleeing = true;
+          c.dirX = dx / d; c.dirY = dy / d;
+          speed = params.critterFleeSpeed;
+          c.timer = 0.4; // keep running a little after leaving the fear radius
+        } else {
+          c.timer -= dt;
+          if (c.timer <= 0) {
+            c.fleeing = false;
+            if (rand(state) < 0.3) {
+              c.dirX = 0; c.dirY = 0; // pause
+            } else {
+              const a = rand(state) * Math.PI * 2;
+              c.dirX = Math.cos(a); c.dirY = Math.sin(a);
+            }
+            c.timer = 0.8 + rand(state) * 1.8;
+          }
+          speed = c.fleeing ? params.critterFleeSpeed : params.critterSpeed;
+        }
+        tx = c.dirX * speed; ty = c.dirY * speed;
+      }
+    }
+
+    if (c.mode !== 'lunge') {
+      if (c.mode === 'windup' || c.mode === 'thrown') { tx = 0; ty = 0; }
+      [c.vx, c.vy] = approach(c.vx, c.vy, tx, ty, accel * dt);
+    }
+    const want = Math.hypot(c.vx, c.vy);
+    move(state.map, c, { vx: c.vx, vy: c.vy }, dt, params.critterRadius);
+    // Pressed against a wall while wandering: pick a new direction next step.
+    if (c.mode === 'wander' && want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
+
+    if (dashing && dist(c, p) < contact + params.killMargin) { killSpider(state, c); continue; }
+    if (c.mode === 'lunge' && !c.hitDone && dist(c, p) < contact + 0.05) {
+      c.hitDone = true;
+      hitPlayer(state, c, params);
+    }
+  }
 }
 
 // Smallest gap between the player circle and any wall; negative = overlap.
@@ -487,7 +626,7 @@ function wallClearance(state, r, p = state.player) {
 }
 
 // ---- src/levels.js
-// Level legend: '#' wall, '.' floor, 'P' player spawn, '*' shard, 'b' critter.
+// Level legend: '#' wall, '.' floor, 'P' player spawn, '*' battery cell, 'b' or 's' spider.
 const LEVELS = [
   {
     name: 'Pump Yard',
@@ -597,14 +736,28 @@ const RIG_DEFAULTS = {
   stepHeight: 0.14,
   stepLead: 0.8, // how far ahead (in step times) a foot aims while moving
   scale: 1, // 1 = player size; smaller for little critters
+  legs: 6, // 6 (insect, tripod gait) or 8 (spider, alternating groups of four)
 };
 
-// Leg layout: front, middle, back on each side. Tripod groups alternate.
-const LEG_LAYOUT = [
+// Spiders: eight long legs, low wide stance, quick small steps.
+const SPIDER_RIG = {
+  ...RIG_DEFAULTS, legs: 8, scale: 0.6,
+  bodyF: 4, bodyZeta: 0.8, bodyR: 0, headF: 3,
+  bodyHeight: 0.2, hipSide: 0.08, hipAlong: 0.07,
+  footSide: 0.52, footAlong: 0.3, thigh: 0.36, shin: 0.42,
+  stepThreshold: 0.22, stepTime: 0.05, stepHeight: 0.16,
+};
+
+// Leg layouts. Neighbouring legs on a side, and the same leg across the
+// body, are always in different groups, so the body stays supported.
+const LEG_LAYOUT_6 = [
   { side: -1, along: 1, group: 0 }, { side: 1, along: 1, group: 1 },
   { side: -1, along: 0, group: 1 }, { side: 1, along: 0, group: 0 },
   { side: -1, along: -1, group: 0 }, { side: 1, along: -1, group: 1 },
 ];
+const LEG_LAYOUT_8 = [1.15, 0.4, -0.4, -1.15].flatMap((along, i) => [
+  { side: -1, along, group: i % 2 }, { side: 1, along, group: (i + 1) % 2 },
+]);
 
 function rigMotion(o) {
   return {
@@ -623,7 +776,7 @@ function createRig(x, y, heading = Math.PI / 4, opts = RIG_DEFAULTS) {
     head: createFollower([x, y], ...m.head),
     targetHeading: heading,
     pos: { x, y }, heading, headPos: { x, y },
-    legs: LEG_LAYOUT.map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
+    legs: (opts.legs === 8 ? LEG_LAYOUT_8 : LEG_LAYOUT_6).map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
     vel: { x: 0, y: 0 },
     time: 0,
   };
@@ -844,9 +997,10 @@ function quantize(data, width, height, table, dither = 0) {
 
 // ---- src/render.js
 // Canvas renderer. Reads simulation state, never changes it.
-// The world is drawn into a small offscreen canvas (one pixel per `look.pixel`
-// screen pixels), lit, snapped to the palette in src/pixel.js, then scaled up
-// without smoothing: a pixelated viewport over a grimy, wet, electrical world.
+// The world is drawn into a small offscreen canvas at a fixed art resolution
+// (one art pixel = `look.pixel` world pixels, whatever the zoom), lit, snapped
+// to the palette in src/pixel.js, then scaled up by a whole number without
+// smoothing. Zoom only changes that whole-number scale, never the art.
 
 const C = COLORS;
 const WALL_H = 34;
@@ -854,7 +1008,7 @@ const Z_PX = 36; // world pixels per tile of height
 const HW = TILE_W / 2;
 const HH = TILE_H / 2;
 
-const LOOK_DEFAULTS = { pixel: 3, dither: 6, darkness: 0.55, rain: 0.6, palette: true };
+const LOOK_DEFAULTS = { pixel: 2, dither: 6, darkness: 0.55, rain: 0.6, palette: true };
 
 // Stable per-tile noise in [0, 1).
 function hash(a, b, k = 0) {
@@ -1172,10 +1326,76 @@ function createRenderer(canvas) {
     for (const l of legs) if (depth(l) >= mid) drawLeg(rig, l, style);
   }
 
-  const CRITTER_STYLES = [
-    { shell: C.beetleA1, shade: C.beetleA0, limb: C.limb, legW: 1.6, led: null },
-    { shell: C.beetleB1, shade: C.beetleB0, limb: C.limb, legW: 1.6, led: null },
-  ];
+  const SPIDER_SHELLS = [[C.beetleB1, C.beetleB0], [C.beetleA1, C.beetleA0]];
+
+  // Spider: big abdomen behind, small thorax in front, eight legs, a row of
+  // eyes that glow hot while it winds up and lunges.
+  function drawSpider(rig, c, i, t) {
+    const o = rig.opts, k = o.scale, hd = rig.heading;
+    const cs = Math.cos(hd), sn = Math.sin(hd);
+    const { x, y } = rig.pos;
+    const dead = !c.alive;
+    const [shell, shade] = dead ? [C.void2, C.void1] : SPIDER_SHELLS[i % SPIDER_SHELLS.length];
+    const z = dead ? 0.04 : o.bodyHeight * k;
+    ellipsePath(x, y, 0, hd, 0.32 * k, 0.26 * k);
+    ctx.fillStyle = C.void1; ctx.fill();
+    const style = { limb: dead ? C.void2 : C.limb, legW: 1.4, led: null, shade };
+    const depth = (l) => { const hp = hipOf(rig, l); return hp.x + hp.y; };
+    const legs = [...rig.legs].sort((a, b) => depth(a) - depth(b));
+    if (dead) {
+      // Legs curled in under the body.
+      ctx.strokeStyle = C.void2; ctx.lineWidth = px(1.4);
+      for (const l of rig.legs) {
+        const hp = hipOf(rig, l);
+        const fx2 = x + (l.foot.x - x) * 0.45, fy2 = y + (l.foot.y - y) * 0.45;
+        ctx.beginPath(); ctx.moveTo(...P3(hp.x, hp.y, z)); ctx.quadraticCurveTo(...P3(fx2, fy2, 0.12 * k), ...P3(fx2 * 0.8 + x * 0.2, fy2 * 0.8 + y * 0.2, 0.02)); ctx.stroke();
+      }
+    } else {
+      for (const l of legs) if (depth(l) < x + y) drawLeg(rig, l, style);
+    }
+    const ax = x - cs * 0.16 * k, ay = y - sn * 0.16 * k;
+    ellipsePath(ax, ay, z - 0.04 * k, hd, 0.21 * k, 0.17 * k);
+    ctx.fillStyle = shade; ctx.fill();
+    ellipsePath(ax, ay, z + 0.02 * k, hd, 0.2 * k, 0.16 * k);
+    ctx.fillStyle = shell; ctx.fill();
+    // Hourglass-ish marking.
+    ellipsePath(ax, ay, z + 0.03 * k, hd, 0.07 * k, 0.04 * k);
+    ctx.fillStyle = dead ? C.void1 : C.rust2; ctx.fill();
+    const tx = x + cs * 0.08 * k, ty = y + sn * 0.08 * k;
+    ellipsePath(tx, ty, z, hd, 0.11 * k, 0.09 * k);
+    ctx.fillStyle = shell; ctx.fill();
+    if (!dead) {
+      const angry = c.mode === 'windup' || c.mode === 'lunge';
+      for (const side of [-1, 1]) {
+        const [ex, ey] = P3(tx + cs * 0.08 * k - sn * side * 0.035 * k, ty + sn * 0.08 * k + cs * side * 0.035 * k, z + 0.03);
+        ctx.fillStyle = angry ? C.hot1 : C.hot0;
+        ctx.fillRect(ex - onePx / 2, ey - onePx / 2, onePx, onePx);
+      }
+      // Eyes always glint a little, so spiders can be spotted in the dark.
+      const [ex, ey] = P3(tx, ty, z);
+      lights.push(angry
+        ? { x: ex, y: ey, r: 26, color: C.hot1, glow: 0.35 }
+        : { x: ex, y: ey, r: 12, color: C.hot0, glow: 0.3 });
+      for (const l of legs) if (depth(l) >= x + y) drawLeg(rig, l, style);
+    }
+  }
+
+  // Jagged electric arc between two spiders; brighter as the wind-up completes.
+  function drawArc(ra, rb, t, charge) {
+    const za = ra.opts.bodyHeight * ra.opts.scale, zb = rb.opts.bodyHeight * rb.opts.scale;
+    const [x0, y0] = P3(ra.pos.x, ra.pos.y, za), [x1, y1] = P3(rb.pos.x, rb.pos.y, zb);
+    const seg = 6, jitter = 3 + charge * 5, frame = Math.floor(t * 24);
+    for (const [color, wdt] of [[C.elec1, 2], [C.elec2, 1]]) {
+      ctx.strokeStyle = color; ctx.lineWidth = px(wdt);
+      ctx.beginPath(); ctx.moveTo(x0, y0);
+      for (let i = 1; i < seg; i++) {
+        const f = i / seg;
+        ctx.lineTo(x0 + (x1 - x0) * f + (hash(i, frame, 1) - 0.5) * jitter * 2, y0 + (y1 - y0) * f + (hash(i, frame, 2) - 0.5) * jitter * 2);
+      }
+      ctx.lineTo(x1, y1); ctx.stroke();
+    }
+    lights.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, r: 40 + charge * 30, color: C.elec1, glow: 0.25 + charge * 0.3 });
+  }
 
   // ---- particles & weather --------------------------------------------------
   function burst(x, y) {
@@ -1184,6 +1404,26 @@ function createRenderer(canvas) {
       fx.particles.push({
         x: sx(x, y), y: sy(x, y) - 10, vx: Math.cos(a) * 80, vy: Math.sin(a) * 50 - 50,
         life: 1, fade: 2, grav: 200, color: i % 3 ? C.cell2 : C.elec2,
+      });
+    }
+  }
+
+  function hitFx(x, y) {
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 18) * Math.PI * 2;
+      fx.particles.push({
+        x: sx(x, y), y: sy(x, y) - 8, vx: Math.cos(a) * 110, vy: Math.sin(a) * 70 - 40,
+        life: 1, fade: 2.5, grav: 260, color: i % 2 ? C.hot1 : C.bone,
+      });
+    }
+  }
+
+  function splat(x, y) {
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      fx.particles.push({
+        x: sx(x, y), y: sy(x, y) - 6, vx: Math.cos(a) * 60, vy: Math.sin(a) * 40 - 30,
+        life: 1, fade: 1.6, grav: 220, color: i % 3 ? C.moss2 : C.elec2, size: i % 3 ? 3 : 2,
       });
     }
   }
@@ -1231,8 +1471,11 @@ function createRenderer(canvas) {
   function draw(state, view, rigs, t, look, dt = 0) {
     const { map } = state;
     const p = state.player;
-    const ps = Math.max(1, Math.round(look.pixel));
-    const lw = Math.max(1, Math.ceil(w / ps)), lh = Math.max(1, Math.ceil(h / ps));
+    scale = 1 / look.pixel; // art pixels per world pixel: fixed, zoom-independent
+    onePx = look.pixel;
+    // Device pixels per art pixel: whole numbers only, so every art pixel is the same size.
+    const up = Math.max(1, Math.round(view.zoom * dpr * look.pixel));
+    const lw = Math.max(1, Math.ceil(canvas.width / up)), lh = Math.max(1, Math.ceil(canvas.height / up));
     if (low.width !== lw || low.height !== lh) {
       low.width = lw; low.height = lh; light.width = lw; light.height = lh;
     }
@@ -1242,8 +1485,6 @@ function createRenderer(canvas) {
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = C.void0; ctx.fillRect(0, 0, lw, lh);
 
-    scale = view.zoom / ps;
-    onePx = 1 / scale;
     // Snap the camera to whole low-res pixels so walls don't shimmer.
     const ox = Math.round(lw / 2 - view.camX * scale), oy = Math.round(lh / 2 - view.camY * scale);
 
@@ -1291,7 +1532,7 @@ function createRenderer(canvas) {
       for (let tx = 0; tx < map.w; tx++) if (isSolid(map, tx, ty)) items.push({ d: tx + ty + 1, k: 0, tx, ty });
     }
     for (const s of state.shards) if (!s.taken) items.push({ d: s.x + s.y, k: 1, s });
-    rigs.critters.forEach((rig, i) => items.push({ d: rig.pos.x + rig.pos.y, k: 3, rig, i }));
+    rigs.critters.forEach((rig, i) => items.push({ d: rig.pos.x + rig.pos.y - (state.critters[i].alive ? 0 : 0.5), k: 3, rig, i, c: state.critters[i] }));
     const pd = pr.pos.x + pr.pos.y;
     items.push({ d: pd, k: 2 });
     items.sort((a, b) => a.d - b.d || a.k - b.k);
@@ -1299,13 +1540,21 @@ function createRenderer(canvas) {
     for (const it of items) {
       if (it.k === 0) drawWall(map, it.tx, it.ty, t, it.d > pd && hidesPlayer(it.tx, it.ty, pr) ? 0.35 : 1);
       else if (it.k === 1) drawCell(it.s, t);
-      else if (it.k === 3) drawBug(it.rig, CRITTER_STYLES[it.i % CRITTER_STYLES.length], t);
+      else if (it.k === 3) drawSpider(it.rig, it.c, it.i, t);
       else {
         drawBug(pr, {
           shell: C.hull1, shade: C.hull0, limb: C.limb, legW: 3, led: p.heat, overheated: p.overheated,
         }, t);
       }
     }
+
+    // Pairs charging an attack are linked by a crackling arc.
+    state.critters.forEach((c, i) => {
+      if (!c.alive || c.mode !== 'windup' || c.role !== 0) return;
+      const o = state.critters[c.partner];
+      if (!o || !o.alive) return;
+      drawArc(rigs.critters[i], rigs.critters[c.partner], t, 1 - c.stateTime / Math.max(1e-6, c.stateTotal));
+    });
 
     // Outline on top so the player stays visible behind walls.
     ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight, pr.heading, 0.26, 0.16);
@@ -1357,11 +1606,11 @@ function createRenderer(canvas) {
 
     out.setTransform(1, 0, 0, 1, 0, 0);
     out.imageSmoothingEnabled = false;
-    out.drawImage(low, 0, 0, lw * ps * dpr, lh * ps * dpr);
+    out.drawImage(low, 0, 0, lw * up, lh * up);
   }
 
   return {
-    resize, draw, burst, updateFx,
+    resize, draw, burst, hitFx, splat, updateFx,
     screenOf: (x, y) => ({ x: sx(x, y), y: sy(x, y) }),
     get size() { return { w, h }; },
   };
@@ -1371,9 +1620,6 @@ function createRenderer(canvas) {
 // Browser entry: fixed-timestep loop, input, HUD and the tunables panel.
 
 const VIEW_DEFAULTS = { zoom: 1, camLag: 0.12 };
-const CRITTER_RIG = {
-  ...RIG_DEFAULTS, scale: 0.55, bodyF: 4, bodyZeta: 0.8, bodyR: 0, headF: 3, stepTime: 0.07,
-};
 // Body-motion presets. "Robot" is the setup from the procedural-animation
 // video (zeta 0.5, r -2: underdamped with anticipation).
 const MOTION_PRESETS = {
@@ -1401,7 +1647,7 @@ const TUNABLES = [
   { key: 'stepThreshold', label: 'Step distance', unit: 'tiles', min: 0.08, max: 0.4, step: 0.01, group: 'Legs', rig: true },
   { key: 'stepTime', label: 'Step time', unit: 's', min: 0.04, max: 0.3, step: 0.01, group: 'Legs', rig: true },
   { key: 'stepHeight', label: 'Step height', unit: 'tiles', min: 0, max: 0.35, step: 0.01, group: 'Legs', rig: true },
-  { key: 'pixel', label: 'Pixel size', unit: 'px', min: 1, max: 6, step: 1, group: 'Look', look: true },
+  { key: 'pixel', label: 'Art pixel size', unit: 'world px', min: 1, max: 4, step: 0.5, group: 'Look', look: true },
   { key: 'dither', label: 'Dither', unit: '', min: 0, max: 32, step: 1, group: 'Look', look: true },
   { key: 'darkness', label: 'Darkness', unit: '', min: 0, max: 0.85, step: 0.05, group: 'Look', look: true },
   { key: 'rain', label: 'Rain', unit: '', min: 0, max: 1, step: 0.05, group: 'Look', look: true },
@@ -1409,8 +1655,8 @@ const TUNABLES = [
   { key: 'camLag', label: 'Camera lag', unit: 's', min: 0, max: 0.6, step: 0.01, group: 'Camera', view: true },
 ];
 
-const STORE_KEY = 'shardfield.tunables.v1';
-const BEST_KEY = 'shardfield.best.v1';
+const STORE_KEY = 'biometric.tunables.v1';
+const BEST_KEY = 'biometric.best.v1';
 
 function load(key) {
   try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
@@ -1438,11 +1684,11 @@ function start(snapshot) {
     const p = state.player;
     rigs = {
       player: createRig(p.x, p.y, Math.atan2(p.faceY, p.faceX), { ...rigOpts }),
-      critters: state.critters.map((c, i) => createRig(c.x, c.y, i * 1.3, CRITTER_RIG)),
+      critters: state.critters.map((c, i) => createRig(c.x, c.y, i * 1.3, SPIDER_RIG)),
     };
   }
   makeRigs();
-  let collectedSeen = 0;
+  let collectedSeen = 0, hitsSeen = 0, shake = 0;
   let started = false;
 
   function centreCamera() {
@@ -1451,7 +1697,7 @@ function start(snapshot) {
   }
   function restart() {
     state = createState(LEVELS[levelIndex], (Date.now() >>> 0) || 1);
-    collectedSeen = 0;
+    collectedSeen = 0; hitsSeen = 0;
     makeRigs();
     centreCamera();
     $('win').hidden = true;
@@ -1680,15 +1926,20 @@ function start(snapshot) {
   }
 
   // ---- HUD ---------------------------------------------------------------
-  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudBpmLabel = $('hud-bpm-label');
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudCharges = $('hud-charges'), hudKills = $('hud-kills'), hudBpmLabel = $('hud-bpm-label');
   const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
   function updateHud() {
     hudShards.textContent = `${state.collected} / ${state.shards.length}`;
     hudTime.textContent = fmtTime(state.time);
     const cd = params.dashCooldown > 0 ? 1 - state.player.dashCooldown / params.dashCooldown : 1;
     hudDash.style.setProperty('--fill', String(cd));
-    hudDash.classList.toggle('ready', state.player.dashCooldown <= 0 && !state.player.overheated);
-    hudDash.classList.toggle('blocked', state.player.overheated);
+    const pl = state.player;
+    const canDash = pl.dashCooldown <= 0 && !pl.overheated && pl.charges > 0;
+    hudDash.classList.toggle('ready', canDash);
+    hudDash.classList.toggle('blocked', pl.overheated || pl.charges === 0);
+    hudCharges.textContent = String(pl.charges);
+    hudCharges.classList.toggle('empty', pl.charges === 0);
+    hudKills.textContent = `${state.kills} / ${state.critters.length}`;
     const bpm = Math.round(60 + state.player.heat * 120);
     hudBpm.textContent = state.player.overheated ? 'HOT' : String(bpm);
     hudBpm.classList.toggle('hot', state.player.heat > 0.5);
@@ -1742,6 +1993,10 @@ function start(snapshot) {
       if (s) { s.burst = true; renderer.burst(s.x, s.y); }
       collectedSeen++;
     }
+    if (state.hits > hitsSeen) { hitsSeen = state.hits; renderer.hitFx(ix, iy); shake = 0.25; }
+    state.critters.forEach((c) => {
+      if (!c.alive && !c.splatted) { c.splatted = true; renderer.splat(c.x, c.y); }
+    });
     renderer.updateFx(dt, p, ix, iy, rigs.player);
     // Animation runs on real frame time; the follower clamps itself on long frames.
     const adt = Math.min(dt, 0.1);
@@ -1753,6 +2008,7 @@ function start(snapshot) {
     });
     updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy }, blocked);
     state.critters.forEach((c, i) => {
+      if (!c.alive) return; // corpses stay where they fell
       const cx = c.px + (c.x - c.px) * view.alpha, cy = c.py + (c.y - c.py) * view.alpha;
       updateRig(rigs.critters[i], adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, blocked);
     });
@@ -1762,13 +2018,17 @@ function start(snapshot) {
     view.camX += (target.x - view.camX) * k;
     view.camY += (target.y - 10 - view.camY) * k;
     const fit = Math.min(renderer.size.w, renderer.size.h) / 560;
-    renderer.draw(state, { ...view, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, rigs, clock, look, dt);
+    shake = Math.max(0, shake - dt);
+    const jolt = shake > 0 ? Math.sin(clock * 90) * 4 * (shake / 0.25) : 0;
+    renderer.draw(state, { ...view, camX: view.camX + jolt, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, rigs, clock, look, dt);
     updateHud();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
   window.claude?.hot?.snapshot?.(() => ({ tune: tuneData() }));
+  // Test hook: open the page with #debug to reach the live state from a script.
+  if (location.hash === '#debug') window.biometricDebug = { get state() { return state; }, params, look, view };
 }
 
 const hot = window.claude?.hot;

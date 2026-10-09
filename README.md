@@ -1,21 +1,22 @@
-# BiometricGame
+# Biometric
 
-Isometric top-down game prototype, working title **Shardfield**. You are a
-mechanical bug in a rain-soaked industrial ruin full of living bugs: move,
-dash, collect every battery cell as fast as you can. Dashing heats your core;
-overheat and you lose your dash and slow to a crawl. Rendered at low
-resolution and snapped to a fixed grime palette for a pixel-art look.
+Isometric top-down pixel-art game prototype. You are a small mechanical bug
+in a rain-soaked industrial ruin: collect every battery cell as fast as you
+can. Each dash burns a charge, each cell gives one back. Spiders only attack
+in pairs; dash through them to kill them. Hits and dashes heat your core;
+overheat and you lose your dash and slow to a crawl.
 Bodies and legs are animated procedurally (second-order f/ζ/r motion plus
 IK legs), tunable live in the panel.
 
 ## Play
 
-- Single file, no install: open `dist/shardfield.html` in a browser.
+- Single file, no install: open `dist/biometric.html` in a browser.
 - From source: `npm run serve`, then open http://localhost:8000
   (ES modules need a local server; `file://` won't load them).
 
 Controls: WASD or arrows to move, Space/Shift to dash, R to restart,
-T for the tunables panel. Gamepad (left stick, A) and touch (drag on the
+T for the tunables panel. Add `#debug` to the URL to expose the live state
+as `window.biometricDebug` for scripted tests. Gamepad (left stick, A) and touch (drag on the
 left, Dash button) also work.
 
 ## How this project is built
@@ -27,15 +28,15 @@ left, Dash button) also work.
 5. The Tunables panel changes the numbers live. "Copy values" gives JSON
    to paste back into the spec once a feel is right.
 
-`npm run build` bundles everything into `dist/shardfield.html`.
+`npm run build` bundles everything into `dist/biometric.html`.
 
 ## Layout
 
 ```
 docs/SPEC.md       behaviour spec (source of truth for numbers)
-src/sim.js         simulation: movement, dash, collision, pickups, heat, critters
+src/sim.js         simulation: movement, dash charges, collision, heat, spiders
 src/dynamics.js    second-order f/zeta/r follower (procedural motion)
-src/bug.js         six-legged rig: tripod gait, two-bone IK
+src/bug.js         leg rig (6 or 8 legs): alternating gait, two-bone IK
 src/levels.js      ASCII level maps
 src/pixel.js       palette + pixel filter (quantize, ordered dither)
 src/render.js      isometric renderer: low-res frame, lighting, rain

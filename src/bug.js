@@ -18,14 +18,28 @@ export const RIG_DEFAULTS = {
   stepHeight: 0.14,
   stepLead: 0.8, // how far ahead (in step times) a foot aims while moving
   scale: 1, // 1 = player size; smaller for little critters
+  legs: 6, // 6 (insect, tripod gait) or 8 (spider, alternating groups of four)
 };
 
-// Leg layout: front, middle, back on each side. Tripod groups alternate.
-const LEG_LAYOUT = [
+// Spiders: eight long legs, low wide stance, quick small steps.
+export const SPIDER_RIG = {
+  ...RIG_DEFAULTS, legs: 8, scale: 0.6,
+  bodyF: 4, bodyZeta: 0.8, bodyR: 0, headF: 3,
+  bodyHeight: 0.2, hipSide: 0.08, hipAlong: 0.07,
+  footSide: 0.52, footAlong: 0.3, thigh: 0.36, shin: 0.42,
+  stepThreshold: 0.22, stepTime: 0.05, stepHeight: 0.16,
+};
+
+// Leg layouts. Neighbouring legs on a side, and the same leg across the
+// body, are always in different groups, so the body stays supported.
+const LEG_LAYOUT_6 = [
   { side: -1, along: 1, group: 0 }, { side: 1, along: 1, group: 1 },
   { side: -1, along: 0, group: 1 }, { side: 1, along: 0, group: 0 },
   { side: -1, along: -1, group: 0 }, { side: 1, along: -1, group: 1 },
 ];
+const LEG_LAYOUT_8 = [1.15, 0.4, -0.4, -1.15].flatMap((along, i) => [
+  { side: -1, along, group: i % 2 }, { side: 1, along, group: (i + 1) % 2 },
+]);
 
 export function rigMotion(o) {
   return {
@@ -44,7 +58,7 @@ export function createRig(x, y, heading = Math.PI / 4, opts = RIG_DEFAULTS) {
     head: createFollower([x, y], ...m.head),
     targetHeading: heading,
     pos: { x, y }, heading, headPos: { x, y },
-    legs: LEG_LAYOUT.map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
+    legs: (opts.legs === 8 ? LEG_LAYOUT_8 : LEG_LAYOUT_6).map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
     vel: { x: 0, y: 0 },
     time: 0,
   };
