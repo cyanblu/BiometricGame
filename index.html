@@ -7,36 +7,21 @@
 <title>Shardfield Prototype</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 /* Layout: full-bleed canvas diorama; HUD pinned to corners; tunables in a side drawer (bottom sheet on phones).
    Single dark look on purpose: the game is a night scene in both host themes. */
 :root {
-  --night: #141829;
-  --night-2: #232a45;
-  --sand: #d9c8a4;
-  --sand-2: #cfbc95;
-  --sand-edge: #8d7a5c;
-  --slate-top: #8190b6;
-  --slate-left: #5a668c;
-  --slate-right: #434d70;
-  --ember: #ffb547;
-  --ember-core: #fff1c9;
-  --hull: #e9e4da;
-  --hull-shade: #9a9bab;
-  --limb: #3b4258;
-  --hot: #ff5d5d;
-  --beetle-a: #4f7a52;
-  --beetle-a-shade: #2f4a34;
-  --beetle-b: #8a5a36;
-  --beetle-b-shade: #553620;
-  --beetle-limb: #2a2219;
-  --visor: #27b3a6;
-  --ink: #ebe8f4;
-  --muted: #a3a8c3;
-  --glass: rgba(20, 24, 41, 0.78);
-  --line: rgba(235, 232, 244, 0.14);
-  --display: "Chakra Petch", "Trebuchet MS", system-ui, sans-serif;
+  /* UI tokens; world colours live in src/pixel.js (COLORS). */
+  --night: #0b0d10;
+  --ember: #c8d43c;   /* battery charge: the accent */
+  --visor: #6fe6ff;   /* electric */
+  --hot: #ff7a3c;
+  --ink: #e8e4d6;
+  --muted: #8e9a96;
+  --glass: rgba(11, 13, 16, 0.84);
+  --line: rgba(232, 228, 214, 0.16);
+  --display: "Pixelify Sans", "Courier New", ui-monospace, monospace;
   --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   color-scheme: dark;
 }
@@ -46,7 +31,7 @@ body {
   margin: 0; overflow: hidden; background: var(--night); color: var(--ink);
   font: 14px/1.4 var(--mono); -webkit-user-select: none; user-select: none;
 }
-#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; image-rendering: pixelated; }
 
 .hud {
   position: fixed; left: 0; right: 0; top: 0; pointer-events: none;
@@ -63,6 +48,7 @@ body {
 #hud-dash { --fill: 1; width: 54px; height: 6px; margin-top: 7px; border-radius: 3px; background: var(--line); position: relative; overflow: hidden; }
 #hud-dash::after { content: ""; position: absolute; inset: 0; width: calc(var(--fill) * 100%); background: var(--muted); }
 #hud-dash.ready::after { background: var(--visor); }
+#hud-dash.blocked::after { background: var(--hot); }
 #hud-bpm { transition: color 0.2s; }
 #hud-bpm.hot { color: var(--hot); }
 .motion { display: grid; gap: 8px; }
@@ -72,7 +58,7 @@ body {
 
 .btn {
   pointer-events: auto; font: 500 12px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
-  color: var(--ink); background: var(--glass); border: 1px solid var(--line); border-radius: 6px;
+  color: var(--ink); background: var(--glass); border: 1px solid var(--line); border-radius: 2px;
   padding: 8px 12px; cursor: pointer;
 }
 .btn:hover { border-color: var(--muted); }
@@ -88,7 +74,7 @@ body {
 #intro, #win {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(360px, calc(100% - 32px)); box-sizing: border-box;
-  background: var(--glass); border: 1px solid var(--line); border-radius: 10px;
+  background: var(--glass); border: 1px solid var(--line); border-radius: 2px;
   padding: 20px 22px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   display: grid; gap: 10px;
 }
@@ -119,13 +105,13 @@ body {
 
 #toast {
   position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 70px); transform: translateX(-50%);
-  background: var(--glass); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; font-size: 12px;
+  background: var(--glass); border: 1px solid var(--line); border-radius: 2px; padding: 8px 12px; font-size: 12px;
   max-width: calc(100% - 32px); box-sizing: border-box;
 }
 
 #stick {
   position: fixed; left: var(--ox); top: var(--oy); width: 96px; height: 96px; margin: -48px 0 0 -48px;
-  border-radius: 50%; border: 1px solid var(--line); background: rgba(20, 24, 41, 0.35); pointer-events: none;
+  border-radius: 50%; border: 1px solid var(--line); background: rgba(11, 13, 16, 0.35); pointer-events: none;
 }
 #stick::after {
   content: ""; position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px;
@@ -141,9 +127,12 @@ body {
   .keys { display: none; }
 }
 @media (max-width: 560px) {
-  #panel { top: auto; left: 0; width: 100%; max-height: 62%; border-left: 0; border-top: 1px solid var(--line); border-radius: 12px 12px 0 0; }
-  .brand small { display: none; }
-  .stats { gap: 12px; }
+  #panel { top: auto; left: 0; width: 100%; max-height: 62%; border-left: 0; border-top: 1px solid var(--line); border-radius: 0; }
+  .brand { display: none; }
+  .hud { justify-content: flex-end; }
+  .stats { gap: 14px; }
+  .stat b { font-size: 18px; white-space: nowrap; }
+  .keys { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   #intro, #win, #panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
@@ -155,11 +144,11 @@ body {
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Shardfield<small>Prototype 0.2 · Courtyard</small></div>
+  <div class="brand">Shardfield<small>Prototype 0.3 · Pump Yard</small></div>
   <div class="stats">
-    <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Shards</span></div>
+    <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Cells</span></div>
     <div class="stat"><b id="hud-time">0:00.00</b><span>Time</span></div>
-    <div class="stat"><b id="hud-bpm">60</b><span>BPM</span></div>
+    <div class="stat"><b id="hud-bpm">60</b><span id="hud-bpm-label">BPM</span></div>
     <div class="stat"><div id="hud-dash" class="ready"></div><span>Dash</span></div>
   </div>
 </div>
@@ -170,15 +159,15 @@ body {
 <div id="stick" hidden></div>
 
 <section id="intro">
-  <h1>Collect every shard</h1>
-  <p>You are a mechanical bug. <span id="intro-count">Nine</span> shards are scattered around the courtyard. Grab them all as fast as you can.</p>
-  <p>Dashing heats your core: your pulse climbs and your body gets jumpy. The local beetles keep their distance.</p>
+  <h1>Scavenge the cells</h1>
+  <p>You are a small mechanical bug in a drowned pump yard. <span id="intro-count">Nine</span> battery cells lie in the rain. Collect them all as fast as you can.</p>
+  <p>Dashing heats your core. Hit the limit and you overheat: no dashing and a slow crawl until you cool down. The beetles keep their distance.</p>
   <p>Keyboard, gamepad or touch. On a phone, drag on the left to move and tap Dash.</p>
   <p class="go">Press a move key or tap to start.</p>
 </section>
 
 <section id="win" hidden>
-  <h2>All shards collected</h2>
+  <h2>All cells collected</h2>
   <div id="win-time">0:00.00</div>
   <p id="win-best"></p>
   <div class="actions"><button class="btn" id="again" type="button">Run again (R)</button></div>

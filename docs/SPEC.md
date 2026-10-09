@@ -1,7 +1,9 @@
-# Shardfield behaviour spec (v0.2)
+# Shardfield behaviour spec (v0.3)
 
 Premise: you control a small mechanical bug in a world of living bugs. The
 bug's vital signs (biometrics) are part of play and show up in how it moves.
+Setting: a grimy, rain-soaked industrial ruin with failing electrics (think
+Rain World). The pickups are small battery cells.
 
 Working title. This file is the reference the code is tested against. When a
 number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
@@ -71,13 +73,20 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
 |---|---|---|
 | Heat added per dash | 0.34 | of 1 |
 | Cooling | 0.30 | per s |
+| Overheat ends at | 0.35 | heat |
+| Top speed while overheated | × 0.65 | |
 
 1. Heat lives in the simulation (`player.heat`, 0 to 1, capped at 1).
 2. Pulse shown in the HUD and on the bug's back light: `60 + 120 × heat` BPM.
    The light turns from teal to red above heat 0.5.
-3. Heat changes animation only, not gameplay (for now): body frequency is
-   multiplied by `1 + 0.8 × heat` and body damping by `1 − 0.6 × heat`, so a
-   hot bug moves twitchier and wobblier.
+3. Overheat: when heat reaches 1 the bug overheats. While overheated it
+   cannot dash and its top speed is multiplied by 0.65. It stays overheated
+   until heat has cooled to 0.35 (about 2.2 s). At the defaults, dashing on
+   every cooldown overheats on the 5th dash.
+4. Animation: body frequency is multiplied by `1 + 0.8 × heat` and body
+   damping by `1 − 0.6 × heat`, so a hot bug moves twitchier and wobblier.
+   Above heat 0.6 it steams and sparks; overheated, its back light stutters
+   and the HUD shows HOT / Overheat and a red dash bar.
 
 ## Procedural motion
 
@@ -139,15 +148,30 @@ blow up or jitter.
    a new direction.
 5. Drawn with the same rig at 0.55 scale.
 
-## Shards
+## Battery cells
 
-1. Picked up when the player centre is within `radius + 0.35` of the shard.
+(Called `shards` in the code.)
+
+1. Picked up when the player centre is within `radius + 0.35` of the cell.
 2. When every shard is collected the run is won and the timer stops.
 3. `R` restarts the level with the current tunables.
 
+## Look
+
+1. The world is drawn into an offscreen canvas at `1 / pixel size` of the
+   screen resolution (default pixel size 3), lit, then scaled up without
+   smoothing. The camera snaps to whole low-res pixels.
+2. Every pixel is then snapped to the fixed palette in `src/pixel.js`
+   (`COLORS`), with 4×4 ordered dithering (default strength 6). All palette
+   colours stay reachable (tested).
+3. Lighting: the frame is darkened (default 0.55) except around lights (wall
+   lamps, some of which flicker; battery glow and arcs; the bug's back light,
+   head lamp and body glow), plus a coloured additive glow.
+4. Rain in screen space, drawn before lighting so it shows near lights.
+5. Look settings are tunable: pixel size, dither, darkness, rain, palette on/off.
+
 ## Not decided yet
 
-- What the shards are in this world, and what the goal is beyond collecting.
-- Whether heat should cost something in play (overheating, slower dash).
+- What the goal is beyond collecting cells (do cells charge or cool the bug?).
 - How the player interacts with other bugs beyond scaring them.
 - Art direction beyond placeholder shapes.

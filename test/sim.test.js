@@ -172,6 +172,33 @@ test('heat: each dash adds dashHeat, it cools at heatCool per second, capped at 
   assert.ok(Math.abs(s.player.heat - P.dashHeat) < 1e-9);
   run(s, {}, 0.5);
   assert.ok(Math.abs(s.player.heat - (P.dashHeat - P.heatCool * 0.5)) < 1e-6);
-  for (let i = 0; i < 6; i++) { step(s, { dash: true }); run(s, {}, P.dashCooldown); }
-  assert.ok(s.player.heat <= 1 && s.player.heat > 0.8, `heat ${s.player.heat}`);
+  let peak = 0;
+  for (let i = 0; i < 6; i++) {
+    step(s, { dash: true }); peak = Math.max(peak, s.player.heat);
+    run(s, {}, P.dashCooldown + STEP);
+  }
+  assert.equal(peak, 1, 'reaches the cap');
+});
+
+test('overheat: hitting full heat blocks dashing and slows you until it cools', () => {
+  const s = createState(open);
+  let dashes = 0;
+  while (!s.player.overheated && dashes < 20) {
+    step(s, { dash: true }); dashes++;
+    run(s, {}, P.dashCooldown);
+  }
+  assert.ok(s.player.overheated, 'overheats eventually');
+  assert.ok(dashes >= 3 && dashes <= 8, `overheated after ${dashes} dashes`);
+  // No dash while overheated.
+  step(s, { x: 1, y: 0, dash: true });
+  assert.equal(s.player.dashTime, 0);
+  // Slower top speed (from the middle of the room, away from walls).
+  s.player.x = 1.5; s.player.y = 4.5; s.player.vx = 0; s.player.vy = 0;
+  run(s, toward(1, 0), 0.5);
+  assert.ok(Math.abs(speed(s) - P.maxSpeed * P.overheatSpeed) < 1e-9, `speed ${speed(s)}`);
+  // Recovers once heat has cooled to overheatRecover.
+  run(s, {}, (s.player.heat - P.overheatRecover) / P.heatCool + 2 * STEP);
+  assert.equal(s.player.overheated, false);
+  step(s, { dash: true });
+  assert.ok(s.player.dashTime > 0, 'can dash again');
 });

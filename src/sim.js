@@ -19,6 +19,8 @@ export const DEFAULT_PARAMS = {
   diagonalMode: 'screen', // 'screen' | 'grid'
   dashHeat: 0.34,
   heatCool: 0.3,
+  overheatRecover: 0.35, // overheated until heat cools to this
+  overheatSpeed: 0.65, // top speed multiplier while overheated
   critterRadius: 0.18,
   critterSpeed: 1.1,
   critterFleeSpeed: 3.2,
@@ -77,6 +79,7 @@ export function createState(level, seed = 1) {
       dashTime: 0, dashCooldown: 0, dashBuffer: 0,
       dashX: 0, dashY: 0,
       heat: 0, // 0..1, rises with each dash, cools over time
+      overheated: false, // set when heat hits 1: no dash, slower
     },
     shards: map.shards.map((s) => ({ x: s.x, y: s.y, taken: false })),
     collected: 0,
@@ -188,15 +191,18 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   p.dashBuffer = Math.max(0, p.dashBuffer - dt);
   if (input.dash) p.dashBuffer = params.dashBuffer;
 
-  if (p.dashBuffer > 0 && p.dashCooldown <= 0 && p.dashTime <= 0) {
+  if (p.dashBuffer > 0 && p.dashCooldown <= 0 && p.dashTime <= 0 && !p.overheated) {
     p.dashX = p.faceX; p.dashY = p.faceY;
     p.dashTime = params.dashDuration;
     p.dashCooldown = params.dashCooldown;
     p.dashBuffer = 0;
     p.heat = Math.min(1, p.heat + params.dashHeat);
+    if (p.heat >= 1) p.overheated = true;
   } else {
     p.heat = Math.max(0, p.heat - params.heatCool * dt);
+    if (p.overheated && p.heat <= params.overheatRecover) p.overheated = false;
   }
+  const topSpeed = params.maxSpeed * (p.overheated ? params.overheatSpeed : 1);
 
   let mvx, mvy;
   if (p.dashTime > 0) {
@@ -218,7 +224,7 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     const has = dir.mag > 0;
     [p.vx, p.vy] = approach(
       p.vx, p.vy,
-      dir.x * params.maxSpeed, dir.y * params.maxSpeed,
+      dir.x * topSpeed, dir.y * topSpeed,
       (has ? params.accel : params.decel) * dt,
     );
     mvx = p.vx; mvy = p.vy;

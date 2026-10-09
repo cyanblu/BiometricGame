@@ -1,6 +1,6 @@
 // Browser entry: fixed-timestep loop, input, HUD and the tunables panel.
 import { createState, step, STEP, DEFAULT_PARAMS, isSolid } from './sim.js';
-import { createRenderer } from './render.js';
+import { createRenderer, LOOK_DEFAULTS } from './render.js';
 import { LEVELS } from './levels.js';
 import { createRig, updateRig, setRigMotion, RIG_DEFAULTS } from './bug.js';
 import { stepResponse } from './dynamics.js';
@@ -36,6 +36,10 @@ const TUNABLES = [
   { key: 'stepThreshold', label: 'Step distance', unit: 'tiles', min: 0.08, max: 0.4, step: 0.01, group: 'Legs', rig: true },
   { key: 'stepTime', label: 'Step time', unit: 's', min: 0.04, max: 0.3, step: 0.01, group: 'Legs', rig: true },
   { key: 'stepHeight', label: 'Step height', unit: 'tiles', min: 0, max: 0.35, step: 0.01, group: 'Legs', rig: true },
+  { key: 'pixel', label: 'Pixel size', unit: 'px', min: 1, max: 6, step: 1, group: 'Look', look: true },
+  { key: 'dither', label: 'Dither', unit: '', min: 0, max: 32, step: 1, group: 'Look', look: true },
+  { key: 'darkness', label: 'Darkness', unit: '', min: 0, max: 0.85, step: 0.05, group: 'Look', look: true },
+  { key: 'rain', label: 'Rain', unit: '', min: 0, max: 1, step: 0.05, group: 'Look', look: true },
   { key: 'zoom', label: 'Zoom', unit: '×', min: 0.5, max: 2.5, step: 0.05, group: 'Camera', view: true },
   { key: 'camLag', label: 'Camera lag', unit: 's', min: 0, max: 0.6, step: 0.01, group: 'Camera', view: true },
 ];
@@ -55,6 +59,7 @@ function start(snapshot) {
   const params = { ...DEFAULT_PARAMS, ...stored.params };
   const view = { ...VIEW_DEFAULTS, ...stored.view, camX: 0, camY: 0, alpha: 0 };
   const rigOpts = { ...RIG_DEFAULTS, ...stored.rig };
+  const look = { ...LOOK_DEFAULTS, ...stored.look };
   let best = load(BEST_KEY) ?? {};
 
   const $ = (id) => document.getElementById(id);
@@ -177,9 +182,9 @@ function start(snapshot) {
   function tuneData() {
     const rig = {};
     for (const t of TUNABLES) if (t.rig) rig[t.key] = rigOpts[t.key];
-    return { params, view: { zoom: view.zoom, camLag: view.camLag }, rig };
+    return { params, view: { zoom: view.zoom, camLag: view.camLag }, rig, look };
   }
-  const holder = (t) => (t.view ? view : t.rig ? rigOpts : params);
+  const holder = (t) => (t.view ? view : t.rig ? rigOpts : t.look ? look : params);
   function valueOf(t) { return holder(t)[t.key]; }
   function fmt(t, v) {
     const dec = String(t.step).split('.')[1]?.length ?? 0;
@@ -196,6 +201,7 @@ function start(snapshot) {
         rows.append(h);
         if (group === 'Movement') rows.append(modeRow());
         if (group === 'Body motion') rows.append(motionIntro());
+        if (group === 'Look') rows.append(paletteRow());
       }
       const id = `t-${t.key}`;
       const row = document.createElement('div');
@@ -255,6 +261,16 @@ function start(snapshot) {
     g.fillStyle = cs.getPropertyValue('--muted'); g.font = '20px ' + cs.getPropertyValue('--mono');
     g.fillText('2 s', W - 40, H - 18);
   }
+  function paletteRow() {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label for="t-palette">Palette</label><output></output>
+      <select id="t-palette"><option value="on">Snap to the grime palette</option><option value="off">Free colours</option></select>`;
+    const sel = row.querySelector('select');
+    sel.value = look.palette ? 'on' : 'off';
+    sel.addEventListener('change', () => { look.palette = sel.value === 'on'; persist(); });
+    return row;
+  }
   function modeRow() {
     const row = document.createElement('div');
     row.className = 'row';
@@ -276,6 +292,7 @@ function start(snapshot) {
     Object.assign(params, DEFAULT_PARAMS);
     Object.assign(view, VIEW_DEFAULTS);
     Object.assign(rigOpts, RIG_DEFAULTS);
+    Object.assign(look, LOOK_DEFAULTS);
     persist(); buildPanel();
     flash('Back to the spec defaults');
   });
@@ -298,17 +315,19 @@ function start(snapshot) {
   }
 
   // ---- HUD ---------------------------------------------------------------
-  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm');
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudBpmLabel = $('hud-bpm-label');
   const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
   function updateHud() {
     hudShards.textContent = `${state.collected} / ${state.shards.length}`;
     hudTime.textContent = fmtTime(state.time);
     const cd = params.dashCooldown > 0 ? 1 - state.player.dashCooldown / params.dashCooldown : 1;
     hudDash.style.setProperty('--fill', String(cd));
-    hudDash.classList.toggle('ready', state.player.dashCooldown <= 0);
+    hudDash.classList.toggle('ready', state.player.dashCooldown <= 0 && !state.player.overheated);
+    hudDash.classList.toggle('blocked', state.player.overheated);
     const bpm = Math.round(60 + state.player.heat * 120);
-    hudBpm.textContent = String(bpm);
+    hudBpm.textContent = state.player.overheated ? 'HOT' : String(bpm);
     hudBpm.classList.toggle('hot', state.player.heat > 0.5);
+    hudBpmLabel.textContent = state.player.overheated ? 'Overheat' : 'BPM';
   }
   function onWin() {
     const name = LEVELS[levelIndex].name;
@@ -358,7 +377,7 @@ function start(snapshot) {
       if (s) { s.burst = true; renderer.burst(s.x, s.y); }
       collectedSeen++;
     }
-    renderer.updateFx(dt, p, ix, iy);
+    renderer.updateFx(dt, p, ix, iy, rigs.player);
     // Animation runs on real frame time; the follower clamps itself on long frames.
     const adt = Math.min(dt, 0.1);
     // Biometrics drive motion: a hot core makes the body twitchier.
@@ -378,7 +397,7 @@ function start(snapshot) {
     view.camX += (target.x - view.camX) * k;
     view.camY += (target.y - 10 - view.camY) * k;
     const fit = Math.min(renderer.size.w, renderer.size.h) / 560;
-    renderer.draw(state, { ...view, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, rigs, clock);
+    renderer.draw(state, { ...view, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, rigs, clock, look, dt);
     updateHud();
     requestAnimationFrame(frame);
   }

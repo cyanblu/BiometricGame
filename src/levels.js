@@ -1,7 +1,7 @@
 // Level legend: '#' wall, '.' floor, 'P' player spawn, '*' shard, 'b' critter.
 export const LEVELS = [
   {
-    name: 'Courtyard',
+    name: 'Pump Yard',
     map: [
       '####################',
       '#........#.......b.#',

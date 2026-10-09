@@ -1,8 +1,10 @@
 # BiometricGame
 
 Isometric top-down game prototype, working title **Shardfield**. You are a
-mechanical bug in a world of living bugs: move, dash, collect every shard as
-fast as you can. Dashing heats your core; your pulse and your motion show it.
+mechanical bug in a rain-soaked industrial ruin full of living bugs: move,
+dash, collect every battery cell as fast as you can. Dashing heats your core;
+overheat and you lose your dash and slow to a crawl. Rendered at low
+resolution and snapped to a fixed grime palette for a pixel-art look.
 Bodies and legs are animated procedurally (second-order f/ζ/r motion plus
 IK legs), tunable live in the panel.
 
@@ -35,7 +37,8 @@ src/sim.js         simulation: movement, dash, collision, pickups, heat, critter
 src/dynamics.js    second-order f/zeta/r follower (procedural motion)
 src/bug.js         six-legged rig: tripod gait, two-bone IK
 src/levels.js      ASCII level maps
-src/render.js      isometric canvas renderer
+src/pixel.js       palette + pixel filter (quantize, ordered dither)
+src/render.js      isometric renderer: low-res frame, lighting, rain
 src/main.js        loop, input, HUD, tunables panel
 test/*.test.js     headless tests (node:test)
 tools/build.mjs    single-file bundle
