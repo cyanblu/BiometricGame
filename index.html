@@ -22,7 +22,15 @@
   --slate-right: #434d70;
   --ember: #ffb547;
   --ember-core: #fff1c9;
-  --hull: #f1ece2;
+  --hull: #e9e4da;
+  --hull-shade: #9a9bab;
+  --limb: #3b4258;
+  --hot: #ff5d5d;
+  --beetle-a: #4f7a52;
+  --beetle-a-shade: #2f4a34;
+  --beetle-b: #8a5a36;
+  --beetle-b-shade: #553620;
+  --beetle-limb: #2a2219;
   --visor: #27b3a6;
   --ink: #ebe8f4;
   --muted: #a3a8c3;
@@ -55,6 +63,12 @@ body {
 #hud-dash { --fill: 1; width: 54px; height: 6px; margin-top: 7px; border-radius: 3px; background: var(--line); position: relative; overflow: hidden; }
 #hud-dash::after { content: ""; position: absolute; inset: 0; width: calc(var(--fill) * 100%); background: var(--muted); }
 #hud-dash.ready::after { background: var(--visor); }
+#hud-bpm { transition: color 0.2s; }
+#hud-bpm.hot { color: var(--hot); }
+.motion { display: grid; gap: 8px; }
+.motion canvas { width: 100%; height: auto; aspect-ratio: 536 / 200; background: var(--night); border: 1px solid var(--line); border-radius: 4px; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn.chip { padding: 5px 8px; font-size: 11px; }
 
 .btn {
   pointer-events: auto; font: 500 12px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
@@ -141,10 +155,11 @@ body {
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Shardfield<small>Prototype 0.1 · Courtyard</small></div>
+  <div class="brand">Shardfield<small>Prototype 0.2 · Courtyard</small></div>
   <div class="stats">
     <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Shards</span></div>
     <div class="stat"><b id="hud-time">0:00.00</b><span>Time</span></div>
+    <div class="stat"><b id="hud-bpm">60</b><span>BPM</span></div>
     <div class="stat"><div id="hud-dash" class="ready"></div><span>Dash</span></div>
   </div>
 </div>
@@ -156,7 +171,8 @@ body {
 
 <section id="intro">
   <h1>Collect every shard</h1>
-  <p><span id="intro-count">Nine</span> shards are scattered around the courtyard. Grab them all as fast as you can.</p>
+  <p>You are a mechanical bug. <span id="intro-count">Nine</span> shards are scattered around the courtyard. Grab them all as fast as you can.</p>
+  <p>Dashing heats your core: your pulse climbs and your body gets jumpy. The local beetles keep their distance.</p>
   <p>Keyboard, gamepad or touch. On a phone, drag on the left to move and tap Dash.</p>
   <p class="go">Press a move key or tap to start.</p>
 </section>

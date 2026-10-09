@@ -16,7 +16,15 @@
   --slate-right: #434d70;
   --ember: #ffb547;
   --ember-core: #fff1c9;
-  --hull: #f1ece2;
+  --hull: #e9e4da;
+  --hull-shade: #9a9bab;
+  --limb: #3b4258;
+  --hot: #ff5d5d;
+  --beetle-a: #4f7a52;
+  --beetle-a-shade: #2f4a34;
+  --beetle-b: #8a5a36;
+  --beetle-b-shade: #553620;
+  --beetle-limb: #2a2219;
   --visor: #27b3a6;
   --ink: #ebe8f4;
   --muted: #a3a8c3;
@@ -49,6 +57,12 @@ body {
 #hud-dash { --fill: 1; width: 54px; height: 6px; margin-top: 7px; border-radius: 3px; background: var(--line); position: relative; overflow: hidden; }
 #hud-dash::after { content: ""; position: absolute; inset: 0; width: calc(var(--fill) * 100%); background: var(--muted); }
 #hud-dash.ready::after { background: var(--visor); }
+#hud-bpm { transition: color 0.2s; }
+#hud-bpm.hot { color: var(--hot); }
+.motion { display: grid; gap: 8px; }
+.motion canvas { width: 100%; height: auto; aspect-ratio: 536 / 200; background: var(--night); border: 1px solid var(--line); border-radius: 4px; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn.chip { padding: 5px 8px; font-size: 11px; }
 
 .btn {
   pointer-events: auto; font: 500 12px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
@@ -133,10 +147,11 @@ body {
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Shardfield<small>Prototype 0.1 · Courtyard</small></div>
+  <div class="brand">Shardfield<small>Prototype 0.2 · Courtyard</small></div>
   <div class="stats">
     <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Shards</span></div>
     <div class="stat"><b id="hud-time">0:00.00</b><span>Time</span></div>
+    <div class="stat"><b id="hud-bpm">60</b><span>BPM</span></div>
     <div class="stat"><div id="hud-dash" class="ready"></div><span>Dash</span></div>
   </div>
 </div>
@@ -148,7 +163,8 @@ body {
 
 <section id="intro">
   <h1>Collect every shard</h1>
-  <p><span id="intro-count">Nine</span> shards are scattered around the courtyard. Grab them all as fast as you can.</p>
+  <p>You are a mechanical bug. <span id="intro-count">Nine</span> shards are scattered around the courtyard. Grab them all as fast as you can.</p>
+  <p>Dashing heats your core: your pulse climbs and your body gets jumpy. The local beetles keep their distance.</p>
   <p>Keyboard, gamepad or touch. On a phone, drag on the left to move and tap Dash.</p>
   <p class="go">Press a move key or tap to start.</p>
 </section>
@@ -195,7 +211,23 @@ const DEFAULT_PARAMS = {
   dashBuffer: 0.1,
   pickupRange: 0.35,
   diagonalMode: 'screen', // 'screen' | 'grid'
+  dashHeat: 0.34,
+  heatCool: 0.3,
+  critterRadius: 0.18,
+  critterSpeed: 1.1,
+  critterFleeSpeed: 3.2,
+  critterAccel: 12,
+  critterFear: 2.2,
 };
+
+// Seeded PRNG (mulberry32) kept in the state, so runs stay reproducible.
+function rand(state) {
+  state.seed = (state.seed + 0x6d2b79f5) >>> 0;
+  let t = state.seed;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
 
 function parseLevel(level) {
   const rows = level.map;
@@ -203,6 +235,7 @@ function parseLevel(level) {
   const w = Math.max(...rows.map((r) => r.length));
   const solid = new Uint8Array(w * h);
   const shards = [];
+  const critters = [];
   let spawn = { x: w / 2, y: h / 2 };
   for (let ty = 0; ty < h; ty++) {
     for (let tx = 0; tx < w; tx++) {
@@ -210,9 +243,10 @@ function parseLevel(level) {
       if (c === '#') solid[ty * w + tx] = 1;
       else if (c === 'P') spawn = { x: tx + 0.5, y: ty + 0.5 };
       else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === 'b') critters.push({ x: tx + 0.5, y: ty + 0.5 });
     }
   }
-  return { name: level.name, w, h, solid, shards, spawn };
+  return { name: level.name, w, h, solid, shards, critters, spawn };
 }
 
 function isSolid(map, tx, ty) {
@@ -220,9 +254,14 @@ function isSolid(map, tx, ty) {
   return map.solid[ty * map.w + tx] === 1;
 }
 
-function createState(level) {
+function createState(level, seed = 1) {
   const map = parseLevel(level);
   return {
+    seed: seed >>> 0,
+    critters: map.critters.map((c, i) => ({
+      x: c.x, y: c.y, px: c.x, py: c.y, vx: 0, vy: 0,
+      dirX: 0, dirY: 0, timer: 0.3 * i, fleeing: false,
+    })),
     map,
     player: {
       x: map.spawn.x, y: map.spawn.y,
@@ -231,6 +270,7 @@ function createState(level) {
       faceX: Math.SQRT1_2, faceY: Math.SQRT1_2,
       dashTime: 0, dashCooldown: 0, dashBuffer: 0,
       dashX: 0, dashY: 0,
+      heat: 0, // 0..1, rises with each dash, cools over time
     },
     shards: map.shards.map((s) => ({ x: s.x, y: s.y, taken: false })),
     collected: 0,
@@ -347,6 +387,9 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     p.dashTime = params.dashDuration;
     p.dashCooldown = params.dashCooldown;
     p.dashBuffer = 0;
+    p.heat = Math.min(1, p.heat + params.dashHeat);
+  } else {
+    p.heat = Math.max(0, p.heat - params.heatCool * dt);
   }
 
   let mvx, mvy;
@@ -386,6 +429,8 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     }
   }
 
+  for (const c of state.critters) stepCritter(state, c, params, dt);
+
   if (!state.won) {
     state.time += dt;
     if (state.collected === state.shards.length) state.won = true;
@@ -394,9 +439,42 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   return state;
 }
 
-// Smallest gap between the player circle and any wall; negative = overlap.
-function wallClearance(state, r) {
+// Critters wander, pause, and run from the player when it comes close.
+function stepCritter(state, c, params, dt) {
   const p = state.player;
+  c.px = c.x; c.py = c.y;
+  const dx = c.x - p.x, dy = c.y - p.y;
+  const d = Math.hypot(dx, dy);
+  let speed;
+  if (d < params.critterFear) {
+    c.fleeing = true;
+    const l = d || 1;
+    c.dirX = dx / l; c.dirY = dy / l;
+    speed = params.critterFleeSpeed;
+    c.timer = 0.4; // keep running a little after leaving the fear radius
+  } else {
+    c.timer -= dt;
+    if (c.timer <= 0) {
+      c.fleeing = false;
+      if (rand(state) < 0.3) {
+        c.dirX = 0; c.dirY = 0; // pause
+      } else {
+        const a = rand(state) * Math.PI * 2;
+        c.dirX = Math.cos(a); c.dirY = Math.sin(a);
+      }
+      c.timer = 0.8 + rand(state) * 1.8;
+    }
+    speed = c.fleeing ? params.critterFleeSpeed : params.critterSpeed;
+  }
+  [c.vx, c.vy] = approach(c.vx, c.vy, c.dirX * speed, c.dirY * speed, params.critterAccel * dt);
+  const want = Math.hypot(c.vx, c.vy);
+  move(state.map, c, { vx: c.vx, vy: c.vy }, dt, params.critterRadius);
+  // Pressed against a wall: pick a new direction on the next step.
+  if (want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
+}
+
+// Smallest gap between the player circle and any wall; negative = overlap.
+function wallClearance(state, r, p = state.player) {
   let best = Infinity;
   const x0 = Math.floor(p.x) - 2, x1 = Math.floor(p.x) + 2;
   const y0 = Math.floor(p.y) - 2, y1 = Math.floor(p.y) + 2;
@@ -414,39 +492,296 @@ function wallClearance(state, r) {
 }
 
 // ---- src/levels.js
-// Level legend: '#' wall, '.' floor, 'P' player spawn, '*' shard.
+// Level legend: '#' wall, '.' floor, 'P' player spawn, '*' shard, 'b' critter.
 const LEVELS = [
   {
     name: 'Courtyard',
     map: [
       '####################',
-      '#........#.........#',
+      '#........#.......b.#',
       '#..*.....#.....*...#',
       '#........#.........#',
       '#...##.......##....#',
       '#...##.......##..*.#',
-      '#..................#',
+      '#.....b............#',
       '####..####..####..##',
       '#..................#',
-      '#.*....#....#......#',
+      '#.*....#....#...b..#',
       '#......#.P..#....*.#',
       '#......#....#......#',
       '#..######..######..#',
-      '#..................#',
+      '#..........b.......#',
       '#....*........#....#',
-      '#.............#..*.#',
+      '#.......b.....#..*.#',
       '###...####....#....#',
-      '#.........#........#',
+      '#..b......#........#',
       '#...*.....#....*...#',
       '####################',
     ],
   },
 ];
 
+// ---- src/dynamics.js
+// Second-order motion: y follows x with the "personality" set by
+//   f    natural frequency in Hz (how fast it responds)
+//   zeta damping (0 = rings forever, <1 overshoots, >=1 settles without overshoot)
+//   r    initial response (<0 anticipates, 0 eases in, >1 overshoots at the start)
+// Equation: y + k1*y' + k2*y'' = x + k3*x'. Solved with semi-implicit Euler,
+// with k2 clamped so a long frame can never make it blow up.
+// Pure: no DOM, no randomness. See docs/SPEC.md, "Procedural motion".
+
+function motionConstants(f, zeta, r) {
+  const w = 2 * Math.PI * f;
+  return { k1: zeta / (Math.PI * f), k2: 1 / (w * w), k3: (r * zeta) / w };
+}
+
+// Works on numbers or arrays of numbers (one independent follower per component).
+function createFollower(x0, f, zeta, r) {
+  const arr = Array.isArray(x0);
+  const n = arr ? x0.length : 1;
+  const xp = arr ? [...x0] : [x0];
+  return {
+    y: [...xp], yd: new Array(n).fill(0), xp,
+    k: motionConstants(f, zeta, r),
+    arr,
+    get value() { return this.arr ? this.y : this.y[0]; },
+  };
+}
+
+function setMotion(fol, f, zeta, r) {
+  fol.k = motionConstants(f, zeta, r);
+}
+
+function resetFollower(fol, x) {
+  const xs = fol.arr ? x : [x];
+  for (let i = 0; i < xs.length; i++) { fol.y[i] = xs[i]; fol.yd[i] = 0; fol.xp[i] = xs[i]; }
+}
+
+function follow(fol, T, x, xd) {
+  if (T <= 0) return fol.value;
+  const xs = fol.arr ? x : [x];
+  const { k1, k2, k3 } = fol.k;
+  // Smallest k2 that keeps semi-implicit Euler stable (and free of
+  // frame-to-frame jitter) for this time step.
+  const k2s = Math.max(k2, (T * T) / 2 + (T * k1) / 2, T * k1);
+  for (let i = 0; i < xs.length; i++) {
+    const v = xd === undefined ? (xs[i] - fol.xp[i]) / T : (fol.arr ? xd[i] : xd);
+    fol.xp[i] = xs[i];
+    fol.y[i] += T * fol.yd[i];
+    fol.yd[i] += (T * (xs[i] + k3 * v - fol.y[i] - k1 * fol.yd[i])) / k2s;
+  }
+  return fol.value;
+}
+
+// Step response sampled at `samples` points over `seconds`, for the panel plot.
+function stepResponse(f, zeta, r, seconds = 2, samples = 120) {
+  const fol = createFollower(0, f, zeta, r);
+  const T = seconds / samples;
+  const out = [];
+  for (let i = 0; i < samples; i++) out.push(follow(fol, T, 1));
+  return out;
+}
+
+// ---- src/bug.js
+// Procedural bug rig: the body follows the simulated position through a
+// second-order follower, six legs keep their feet planted on the ground and
+// step in a tripod gait, two-bone IK places the knees. Pure: no DOM, no
+// randomness. Render code reads the rig; the simulation never does.
+// Behaviour and numbers: docs/SPEC.md, "Procedural motion".
+
+const RIG_DEFAULTS = {
+  bodyF: 3, bodyZeta: 0.5, bodyR: 1, // body follow
+  turnF: 2.5, turnZeta: 1, turnR: 0, // heading
+  headF: 1.6, headZeta: 0.6, headR: 0, // head lags the body (secondary motion)
+  bodyHeight: 0.22,
+  hipSide: 0.1, hipAlong: 0.15,
+  footSide: 0.36, footAlong: 0.24,
+  thigh: 0.28, shin: 0.36,
+  stepThreshold: 0.2,
+  stepTime: 0.1,
+  stepHeight: 0.14,
+  stepLead: 0.8, // how far ahead (in step times) a foot aims while moving
+  scale: 1, // 1 = player size; smaller for little critters
+};
+
+// Leg layout: front, middle, back on each side. Tripod groups alternate.
+const LEG_LAYOUT = [
+  { side: -1, along: 1, group: 0 }, { side: 1, along: 1, group: 1 },
+  { side: -1, along: 0, group: 1 }, { side: 1, along: 0, group: 0 },
+  { side: -1, along: -1, group: 0 }, { side: 1, along: -1, group: 1 },
+];
+
+function rigMotion(o) {
+  return {
+    body: [o.bodyF, o.bodyZeta, o.bodyR],
+    turn: [o.turnF, o.turnZeta, o.turnR],
+    head: [o.headF, o.headZeta, o.headR],
+  };
+}
+
+function createRig(x, y, heading = Math.PI / 4, opts = RIG_DEFAULTS) {
+  const m = rigMotion(opts);
+  const rig = {
+    opts,
+    body: createFollower([x, y], ...m.body),
+    turn: createFollower(heading, ...m.turn),
+    head: createFollower([x, y], ...m.head),
+    targetHeading: heading,
+    pos: { x, y }, heading, headPos: { x, y },
+    legs: LEG_LAYOUT.map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
+    vel: { x: 0, y: 0 },
+    time: 0,
+  };
+  placeFeet(rig);
+  return rig;
+}
+
+function setRigMotion(rig, opts) {
+  const m = rigMotion(opts);
+  setMotion(rig.body, ...m.body);
+  setMotion(rig.turn, ...m.turn);
+  setMotion(rig.head, ...m.head);
+  rig.opts = opts;
+}
+
+function frame(rig) {
+  const c = Math.cos(rig.heading), s = Math.sin(rig.heading);
+  return { fx: c, fy: s, rx: -s, ry: c };
+}
+
+function hipOf(rig, leg) {
+  const o = rig.opts, k = o.scale, F = frame(rig);
+  const a = leg.along * o.hipAlong * k, sd = leg.side * o.hipSide * k;
+  return { x: rig.pos.x + F.fx * a + F.rx * sd, y: rig.pos.y + F.fy * a + F.ry * sd, z: o.bodyHeight * k };
+}
+
+function restOf(rig, leg) {
+  const o = rig.opts, k = o.scale, F = frame(rig);
+  const a = leg.along * o.footAlong * k, sd = leg.side * o.footSide * k;
+  const lead = o.stepTime * o.stepLead;
+  return {
+    x: rig.pos.x + F.fx * a + F.rx * sd + rig.vel.x * lead,
+    y: rig.pos.y + F.fy * a + F.ry * sd + rig.vel.y * lead,
+  };
+}
+
+// Pull a foot target back toward the body until it is not on a wall.
+function safeTarget(rig, p, blocked) {
+  if (!blocked) return p;
+  let q = p;
+  for (let i = 0; i < 6 && blocked(q.x, q.y); i++) {
+    q = { x: (q.x + rig.pos.x) / 2, y: (q.y + rig.pos.y) / 2 };
+  }
+  return q;
+}
+
+function placeFeet(rig, blocked) {
+  for (const leg of rig.legs) {
+    const r = safeTarget(rig, restOf(rig, leg), blocked);
+    leg.foot = { ...r }; leg.from = { ...r }; leg.t = 1; leg.lift = 0;
+  }
+}
+
+function snapRig(rig, x, y, heading = rig.heading, blocked) {
+  resetFollower(rig.body, [x, y]);
+  resetFollower(rig.head, [x, y]);
+  resetFollower(rig.turn, heading);
+  rig.targetHeading = heading;
+  rig.pos = { x, y }; rig.heading = heading; rig.headPos = { x, y };
+  rig.vel = { x: 0, y: 0 };
+  placeFeet(rig, blocked);
+}
+
+// target: simulated position and velocity. blocked(x, y): true on walls.
+function updateRig(rig, dt, target, blocked) {
+  if (dt <= 0) return rig;
+  const o = rig.opts;
+  rig.time += dt;
+  const prev = rig.pos;
+  const [bx, by] = follow(rig.body, dt, [target.x, target.y]);
+  rig.pos = { x: bx, y: by };
+  rig.vel = { x: (bx - prev.x) / dt, y: (by - prev.y) / dt };
+
+  const speed = Math.hypot(target.vx, target.vy);
+  if (speed > 0.3) {
+    // Unwrap so the follower always turns the short way round.
+    const want = Math.atan2(target.vy, target.vx);
+    let d = want - rig.targetHeading;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    rig.targetHeading += d;
+  }
+  rig.heading = follow(rig.turn, dt, rig.targetHeading);
+
+  const F = frame(rig);
+  const neck = 0.27 * o.scale;
+  const [hx, hy] = follow(rig.head, dt, [bx + F.fx * neck, by + F.fy * neck]);
+  rig.headPos = { x: hx, y: hy };
+
+  // Snap feet that fell hopelessly behind (respawn, very long frame).
+  const snap = (o.thigh + o.shin) * o.scale * 2.5;
+  for (const leg of rig.legs) {
+    const r = restOf(rig, leg);
+    if (Math.hypot(leg.foot.x - r.x, leg.foot.y - r.y) > snap) { placeFeet(rig, blocked); break; }
+  }
+
+  // Airborne feet travel toward their (moving) rest spot along an arc.
+  for (const leg of rig.legs) {
+    if (leg.t >= 1) continue;
+    leg.t = Math.min(1, leg.t + dt / o.stepTime);
+    const to = safeTarget(rig, restOf(rig, leg), blocked);
+    const e = leg.t * leg.t * (3 - 2 * leg.t);
+    leg.foot = { x: leg.from.x + (to.x - leg.from.x) * e, y: leg.from.y + (to.y - leg.from.y) * e };
+    leg.lift = Math.sin(Math.PI * leg.t) * o.stepHeight * o.scale;
+    if (leg.t >= 1) leg.lift = 0;
+  }
+
+  // Tripod gait: a group lifts only while the other group is fully planted.
+  const airborne = [0, 1].map((g) => rig.legs.some((l) => l.group === g && l.t < 1));
+  const need = [0, 0];
+  for (const leg of rig.legs) {
+    if (leg.t < 1) continue;
+    const r = restOf(rig, leg);
+    need[leg.group] = Math.max(need[leg.group], Math.hypot(leg.foot.x - r.x, leg.foot.y - r.y));
+  }
+  const thr = o.stepThreshold * o.scale;
+  const g = need[0] >= need[1] ? 0 : 1;
+  for (const grp of [g, 1 - g]) {
+    if (need[grp] <= thr || airborne[1 - grp] || airborne[grp]) continue;
+    for (const leg of rig.legs) {
+      if (leg.group !== grp) continue;
+      leg.from = { ...leg.foot }; leg.t = 0;
+    }
+    airborne[grp] = true;
+    break;
+  }
+  return rig;
+}
+
+// Two-bone IK. Returns the knee, bent upward, in the vertical plane through
+// hip and foot. If the foot is out of reach the leg points straight at it.
+function legIK(hip, foot, a, b) {
+  let dx = foot.x - hip.x, dy = foot.y - hip.y, dz = foot.z - hip.z;
+  const dist = Math.hypot(dx, dy, dz) || 1e-9;
+  dx /= dist; dy /= dist; dz /= dist;
+  const d = Math.min(dist, a + b - 1e-6);
+  const along = (a * a - b * b + d * d) / (2 * d);
+  const h = Math.sqrt(Math.max(0, a * a - along * along));
+  // Up direction perpendicular to the hip-foot line.
+  let ux = -dx * dz, uy = -dy * dz, uz = 1 - dz * dz;
+  const ul = Math.hypot(ux, uy, uz);
+  if (ul < 1e-6) { ux = 1; uy = 0; uz = 0; } else { ux /= ul; uy /= ul; uz /= ul; }
+  return {
+    x: hip.x + dx * along + ux * h,
+    y: hip.y + dy * along + uy * h,
+    z: hip.z + dz * along + uz * h,
+  };
+}
+
 // ---- src/render.js
 // Canvas renderer. Reads simulation state, never changes it.
 
 const WALL_H = 34;
+const Z_PX = 36; // screen pixels per tile of height
 const HW = TILE_W / 2;
 const HH = TILE_H / 2;
 
@@ -458,7 +793,10 @@ function readPalette(el) {
     floor: v('--sand'), floor2: v('--sand-2'), floorEdge: v('--sand-edge'),
     wallTop: v('--slate-top'), wallLeft: v('--slate-left'), wallRight: v('--slate-right'),
     shard: v('--ember'), shardCore: v('--ember-core'),
-    body: v('--hull'), visor: v('--visor'), ink: v('--ink'),
+    body: v('--hull'), hullShade: v('--hull-shade'), limb: v('--limb'),
+    visor: v('--visor'), hot: v('--hot'), ink: v('--ink'),
+    critters: [[v('--beetle-a'), v('--beetle-a-shade')], [v('--beetle-b'), v('--beetle-b-shade')]],
+    critterLimb: v('--beetle-limb'),
   };
 }
 
@@ -497,7 +835,8 @@ function createRenderer(canvas) {
     ctx.closePath();
   }
 
-  function drawWall(map, tx, ty) {
+  function drawWall(map, tx, ty, alpha = 1) {
+    ctx.globalAlpha = alpha;
     // Only the faces pointing at the camera (+x and +y) can be visible.
     if (!isSolid(map, tx, ty + 1) || ty + 1 >= map.h) {
       quad(tx, ty + 1, tx + 1, ty + 1, WALL_H);
@@ -511,6 +850,16 @@ function createRenderer(canvas) {
     ctx.fillStyle = pal.wallTop; ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 1; ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // True when a wall drawn after the player would cover its sprite.
+  function hidesPlayer(tx, ty, pr) {
+    const cx = sx(pr.pos.x, pr.pos.y), cy = sy(pr.pos.x, pr.pos.y) - 10;
+    const left = (tx - ty - 1) * HW, right = (tx - ty + 1) * HW;
+    const top = sy(tx, ty) - WALL_H, bottom = sy(tx + 1, ty + 1);
+    const R = 26;
+    return cx + R > left && cx - R < right && cy + R > top && cy - R < bottom;
   }
 
   function drawShard(s, t) {
@@ -535,44 +884,107 @@ function createRenderer(canvas) {
     ctx.restore();
   }
 
-  function playerShape(x, y, p, alpha, outlineOnly) {
-    const bodyW = 11, bodyH = 26;
-    const top = y - bodyH;
+  // Bug drawing. style: { shell, shade, limb, legW, led (0..1 heat) | null }.
+  const P3 = (x, y, z) => [sx(x, y), sy(x, y) - z * Z_PX];
+
+  function ellipsePath(cx, cy, z, heading, a, b) {
+    const c = Math.cos(heading), s = Math.sin(heading);
+    ctx.beginPath();
+    for (let i = 0; i <= 24; i++) {
+      const t = (i / 24) * Math.PI * 2;
+      const ex = Math.cos(t) * a, ey = Math.sin(t) * b;
+      const [px, py] = P3(cx + ex * c - ey * s, cy + ex * s + ey * c, z);
+      if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    }
+    ctx.closePath();
+  }
+
+  function drawLeg(rig, leg, style) {
+    const o = rig.opts;
+    const hip = hipOf(rig, leg);
+    const foot = { x: leg.foot.x, y: leg.foot.y, z: leg.lift };
+    const knee = legIK(hip, foot, o.thigh * o.scale, o.shin * o.scale);
+    const [hx, hy] = P3(hip.x, hip.y, hip.z);
+    const [kx, ky] = P3(knee.x, knee.y, knee.z);
+    const [fx2, fy2] = P3(foot.x, foot.y, foot.z);
+    ctx.strokeStyle = style.limb; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.lineWidth = style.legW;
+    ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(kx, ky); ctx.lineTo(fx2, fy2); ctx.stroke();
+    if (style.led != null) {
+      ctx.fillStyle = style.shade;
+      ctx.beginPath(); ctx.arc(kx, ky, style.legW * 0.7, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function drawBug(rig, style, alpha = 1) {
+    const o = rig.opts, k = o.scale;
+    const { x, y } = rig.pos, hd = rig.heading;
+    const z = o.bodyHeight * k;
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.beginPath();
-    ctx.moveTo(x - bodyW, y - 6);
-    ctx.lineTo(x - bodyW, top + bodyW);
-    ctx.arc(x, top + bodyW, bodyW, Math.PI, 0);
-    ctx.lineTo(x + bodyW, y - 6);
-    ctx.ellipse(x, y - 6, bodyW, bodyW * 0.5, 0, 0, Math.PI);
-    ctx.closePath();
-    if (outlineOnly) {
-      ctx.strokeStyle = pal.ink; ctx.lineWidth = 1.5; ctx.stroke();
-    } else {
-      ctx.fillStyle = pal.body; ctx.fill();
-      // Visor faces the movement direction, squashed by the projection.
-      const fx2 = sx(p.faceX, p.faceY), fy2 = sy(p.faceX, p.faceY);
-      const fl = Math.hypot(fx2, fy2) || 1;
-      const vx = (fx2 / fl) * bodyW * 0.55;
-      const front = fy2 > -0.2;
-      if (front) {
-        ctx.beginPath();
-        ctx.ellipse(x + vx, top + bodyW + 1, 6.5, 3.6, 0, 0, Math.PI * 2);
-        ctx.fillStyle = pal.visor; ctx.fill();
-      }
+    // Ground shadow.
+    ellipsePath(x, y, 0, hd, 0.3 * k, 0.2 * k);
+    ctx.fillStyle = 'rgba(10,12,24,0.28)'; ctx.fill();
+    for (const leg of rig.legs) {
+      ctx.fillStyle = 'rgba(10,12,24,0.25)';
+      const [fx2, fy2] = P3(leg.foot.x, leg.foot.y, 0);
+      ctx.beginPath(); ctx.ellipse(fx2, fy2, 2.5 * k + 1, 1.3 * k + 0.6, 0, 0, Math.PI * 2); ctx.fill();
     }
+    // Far legs, body, head, near legs.
+    const depth = (l) => { const h = hipOf(rig, l); return h.x + h.y; };
+    const mid = x + y;
+    const legs = [...rig.legs].sort((a, b) => depth(a) - depth(b));
+    for (const l of legs) if (depth(l) < mid) drawLeg(rig, l, style);
+    ellipsePath(x, y, z - 0.05 * k, hd, 0.27 * k, 0.17 * k);
+    ctx.fillStyle = style.shade; ctx.fill();
+    ellipsePath(x, y, z, hd, 0.26 * k, 0.16 * k);
+    ctx.fillStyle = style.shell; ctx.fill();
+    // Wing seam or panel line down the back.
+    const c = Math.cos(hd), s = Math.sin(hd);
+    const [ax, ay] = P3(x + c * 0.2 * k, y + s * 0.2 * k, z + 0.01);
+    const [bx, by] = P3(x - c * 0.24 * k, y - s * 0.24 * k, z + 0.01);
+    ctx.strokeStyle = style.shade; ctx.lineWidth = Math.max(1, 1.5 * k);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    if (style.led != null) {
+      // Heartbeat light: beats faster and turns hot with core heat.
+      const bpm = 60 + style.led * 120;
+      const ph = (rig.time * bpm / 60) % 1;
+      const pulse = Math.exp(-ph * 9) + 0.6 * Math.exp(-Math.max(0, ph - 0.18) * 12) * (ph > 0.18 ? 1 : 0);
+      const [lx, ly] = P3(x - c * 0.12 * k, y - s * 0.12 * k, z + 0.02);
+      ctx.fillStyle = style.led > 0.5 ? pal.hot : pal.visor;
+      ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 6 + 10 * pulse;
+      ctx.globalAlpha = alpha * (0.45 + 0.55 * Math.min(1, pulse));
+      ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0; ctx.globalAlpha = alpha;
+    }
+    // Head lags behind the body (its own, slower follower).
+    const hx = rig.headPos.x, hy = rig.headPos.y;
+    ellipsePath(hx, hy, z + 0.02 * k, hd, 0.11 * k, 0.1 * k);
+    ctx.fillStyle = style.shade; ctx.fill();
+    ellipsePath(hx, hy, z + 0.05 * k, hd, 0.1 * k, 0.09 * k);
+    ctx.fillStyle = style.shell; ctx.fill();
+    if (style.led != null) {
+      ellipsePath(hx + c * 0.06 * k, hy + s * 0.06 * k, z + 0.07 * k, hd, 0.045 * k, 0.07 * k);
+      ctx.fillStyle = pal.visor; ctx.fill();
+    }
+    // Antennae.
+    ctx.strokeStyle = style.limb; ctx.lineWidth = Math.max(1, 1.2 * k);
+    for (const side of [-1, 1]) {
+      const [rx, ry] = P3(hx + c * 0.07 * k - s * side * 0.04 * k, hy + s * 0.07 * k + c * side * 0.04 * k, z + 0.07 * k);
+      const tx = hx + c * 0.24 * k - s * side * 0.13 * k, ty = hy + s * 0.24 * k + c * side * 0.13 * k;
+      const [qx, qy] = P3(tx, ty, z + 0.2 * k);
+      ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(qx, qy); ctx.stroke();
+    }
+    for (const l of legs) if (depth(l) >= mid) drawLeg(rig, l, style);
     ctx.restore();
   }
 
-  function drawPlayer(x, y, p, params) {
-    const r = params.radius * Math.SQRT2;
-    ctx.fillStyle = 'rgba(10,12,24,0.35)';
-    ctx.beginPath(); ctx.ellipse(x, y, r * HW, r * HH, 0, 0, Math.PI * 2); ctx.fill();
-    for (const g of fx.trail) {
-      playerShape(g.x, g.y, p, g.life * 0.35, false);
-    }
-    playerShape(x, y, p, 1, false);
+  function playerStyle(heat) {
+    return { shell: pal.body, shade: pal.hullShade, limb: pal.limb, legW: 3, led: heat };
+  }
+  function critterStyle(i) {
+    const [shell, shade] = pal.critters[i % pal.critters.length];
+    return { shell, shade, limb: pal.critterLimb, legW: 1.6, led: null };
   }
 
   function burst(x, y) {
@@ -589,10 +1001,10 @@ function createRenderer(canvas) {
     fx.particles = fx.particles.filter((q) => q.life > 0);
     for (const g of fx.trail) g.life -= dt * 4;
     fx.trail = fx.trail.filter((g) => g.life > 0);
-    if (p.dashTime > 0) fx.trail.push({ x: sx(px, py), y: sy(px, py), life: 1 });
+    if (p.dashTime > 0) fx.trail.push({ x: px, y: py, life: 1 });
   }
 
-  function draw(state, view, params, t) {
+  function draw(state, view, rigs, t) {
     const { map } = state;
     const p = state.player;
     const px = p.px + (p.x - p.px) * view.alpha;
@@ -635,17 +1047,31 @@ function createRenderer(canvas) {
       }
     }
     for (const s of state.shards) if (!s.taken) items.push({ d: s.x + s.y, k: 1, s });
-    items.push({ d: px + py, k: 2 });
+    rigs.critters.forEach((rig, i) => items.push({ d: rig.pos.x + rig.pos.y, k: 3, rig, i }));
+    items.push({ d: rigs.player.pos.x + rigs.player.pos.y, k: 2 });
     items.sort((a, b) => a.d - b.d || a.k - b.k);
 
     for (const it of items) {
-      if (it.k === 0) drawWall(map, it.tx, it.ty);
+      if (it.k === 0) {
+        const front = it.d > rigs.player.pos.x + rigs.player.pos.y;
+        drawWall(map, it.tx, it.ty, front && hidesPlayer(it.tx, it.ty, rigs.player) ? 0.35 : 1);
+      }
       else if (it.k === 1) drawShard(it.s, t);
-      else drawPlayer(sx(px, py), sy(px, py), p, params);
+      else if (it.k === 3) drawBug(it.rig, critterStyle(it.i));
+      else {
+        const pr = rigs.player, z = pr.opts.bodyHeight * pr.opts.scale;
+        for (const g of fx.trail) {
+          ellipsePath(g.x, g.y, z, pr.heading, 0.26, 0.16);
+          ctx.fillStyle = pal.visor; ctx.globalAlpha = g.life * 0.3; ctx.fill(); ctx.globalAlpha = 1;
+        }
+        drawBug(pr, playerStyle(p.heat));
+      }
     }
 
     // Outline on top so the player stays visible behind walls.
-    playerShape(sx(px, py), sy(px, py), p, 0.3, true);
+    const pr = rigs.player;
+    ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight * pr.opts.scale, pr.heading, 0.26, 0.16);
+    ctx.strokeStyle = pal.ink; ctx.globalAlpha = 0.3; ctx.lineWidth = 1.5; ctx.stroke(); ctx.globalAlpha = 1;
 
     for (const q of fx.particles) {
       ctx.globalAlpha = Math.max(0, q.life);
@@ -667,6 +1093,18 @@ function createRenderer(canvas) {
 // Browser entry: fixed-timestep loop, input, HUD and the tunables panel.
 
 const VIEW_DEFAULTS = { zoom: 1, camLag: 0.12 };
+const CRITTER_RIG = {
+  ...RIG_DEFAULTS, scale: 0.55, bodyF: 4, bodyZeta: 0.8, bodyR: 0, headF: 3, stepTime: 0.07,
+};
+// Body-motion presets. "Robot" is the setup from the procedural-animation
+// video (zeta 0.5, r -2: underdamped with anticipation).
+const MOTION_PRESETS = {
+  Default: { bodyF: 3, bodyZeta: 0.5, bodyR: 1 },
+  Robot: { bodyF: 2, bodyZeta: 0.5, bodyR: -2 },
+  Snappy: { bodyF: 6, bodyZeta: 1, bodyR: 0 },
+  Springy: { bodyF: 2.5, bodyZeta: 0.25, bodyR: 2 },
+  Heavy: { bodyF: 1.2, bodyZeta: 1.2, bodyR: 0 },
+};
 
 // Slider ranges for every tunable. `group` decides where it shows in the panel.
 const TUNABLES = [
@@ -678,6 +1116,13 @@ const TUNABLES = [
   { key: 'dashDuration', label: 'Dash duration', unit: 's', min: 0.04, max: 0.5, step: 0.01, group: 'Dash' },
   { key: 'dashCooldown', label: 'Dash cooldown', unit: 's', min: 0, max: 2, step: 0.05, group: 'Dash' },
   { key: 'dashBuffer', label: 'Input buffer', unit: 's', min: 0, max: 0.3, step: 0.01, group: 'Dash' },
+  { key: 'bodyF', label: 'Frequency f', unit: 'Hz', min: 0.3, max: 10, step: 0.1, group: 'Body motion', rig: true },
+  { key: 'bodyZeta', label: 'Damping ζ', unit: '', min: 0, max: 2, step: 0.05, group: 'Body motion', rig: true },
+  { key: 'bodyR', label: 'Response r', unit: '', min: -3, max: 3, step: 0.1, group: 'Body motion', rig: true },
+  { key: 'headF', label: 'Head lag f', unit: 'Hz', min: 0.3, max: 10, step: 0.1, group: 'Body motion', rig: true },
+  { key: 'stepThreshold', label: 'Step distance', unit: 'tiles', min: 0.08, max: 0.4, step: 0.01, group: 'Legs', rig: true },
+  { key: 'stepTime', label: 'Step time', unit: 's', min: 0.04, max: 0.3, step: 0.01, group: 'Legs', rig: true },
+  { key: 'stepHeight', label: 'Step height', unit: 'tiles', min: 0, max: 0.35, step: 0.01, group: 'Legs', rig: true },
   { key: 'zoom', label: 'Zoom', unit: '×', min: 0.5, max: 2.5, step: 0.05, group: 'Camera', view: true },
   { key: 'camLag', label: 'Camera lag', unit: 's', min: 0, max: 0.6, step: 0.01, group: 'Camera', view: true },
 ];
@@ -696,6 +1141,7 @@ function start(snapshot) {
   const stored = snapshot?.tune ?? load(STORE_KEY) ?? {};
   const params = { ...DEFAULT_PARAMS, ...stored.params };
   const view = { ...VIEW_DEFAULTS, ...stored.view, camX: 0, camY: 0, alpha: 0 };
+  const rigOpts = { ...RIG_DEFAULTS, ...stored.rig };
   let best = load(BEST_KEY) ?? {};
 
   const $ = (id) => document.getElementById(id);
@@ -703,6 +1149,16 @@ function start(snapshot) {
   const renderer = createRenderer(canvas);
   let levelIndex = 0;
   let state = createState(LEVELS[levelIndex]);
+  const blocked = (x, y) => isSolid(state.map, Math.floor(x), Math.floor(y));
+  let rigs;
+  function makeRigs() {
+    const p = state.player;
+    rigs = {
+      player: createRig(p.x, p.y, Math.atan2(p.faceY, p.faceX), { ...rigOpts }),
+      critters: state.critters.map((c, i) => createRig(c.x, c.y, i * 1.3, CRITTER_RIG)),
+    };
+  }
+  makeRigs();
   let collectedSeen = 0;
   let started = false;
 
@@ -711,8 +1167,9 @@ function start(snapshot) {
     view.camX = s.x; view.camY = s.y - 10;
   }
   function restart() {
-    state = createState(LEVELS[levelIndex]);
+    state = createState(LEVELS[levelIndex], (Date.now() >>> 0) || 1);
     collectedSeen = 0;
+    makeRigs();
     centreCamera();
     $('win').hidden = true;
   }
@@ -802,9 +1259,15 @@ function start(snapshot) {
   const panel = $('panel');
   const rows = $('tunables');
   function persist() {
-    save(STORE_KEY, { params, view: { zoom: view.zoom, camLag: view.camLag } });
+    save(STORE_KEY, tuneData());
   }
-  function valueOf(t) { return t.view ? view[t.key] : params[t.key]; }
+  function tuneData() {
+    const rig = {};
+    for (const t of TUNABLES) if (t.rig) rig[t.key] = rigOpts[t.key];
+    return { params, view: { zoom: view.zoom, camLag: view.camLag }, rig };
+  }
+  const holder = (t) => (t.view ? view : t.rig ? rigOpts : params);
+  function valueOf(t) { return holder(t)[t.key]; }
   function fmt(t, v) {
     const dec = String(t.step).split('.')[1]?.length ?? 0;
     return Number(v).toFixed(dec);
@@ -819,6 +1282,7 @@ function start(snapshot) {
         h.textContent = group;
         rows.append(h);
         if (group === 'Movement') rows.append(modeRow());
+        if (group === 'Body motion') rows.append(motionIntro());
       }
       const id = `t-${t.key}`;
       const row = document.createElement('div');
@@ -831,12 +1295,52 @@ function start(snapshot) {
       out.textContent = `${fmt(t, valueOf(t))} ${t.unit}`;
       input.addEventListener('input', () => {
         const v = Number(input.value);
-        if (t.view) view[t.key] = v; else params[t.key] = v;
+        holder(t)[t.key] = v;
+        if (t.rig) drawResponse();
         out.textContent = `${fmt(t, v)} ${t.unit}`;
         persist();
       });
       rows.append(row);
     }
+    drawResponse();
+  }
+  // Step response of the current body settings: how the body follows when
+  // the target jumps by one unit. Same maths as the game uses.
+  function motionIntro() {
+    const box = document.createElement('div');
+    box.className = 'motion';
+    box.innerHTML = `<canvas id="response" width="536" height="200" aria-label="Step response plot"></canvas>
+      <p class="note">How the body catches up when its target jumps. Dashed line = target. Above it is overshoot, below zero is anticipation.</p>
+      <div class="presets"></div>`;
+    const pre = box.querySelector('.presets');
+    for (const [name, values] of Object.entries(MOTION_PRESETS)) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'btn chip'; b.textContent = name;
+      b.addEventListener('click', () => { Object.assign(rigOpts, values); persist(); buildPanel(); });
+      pre.append(b);
+    }
+    return box;
+  }
+  function drawResponse() {
+    const c = document.getElementById('response');
+    if (!c) return;
+    const g = c.getContext('2d');
+    const cs = getComputedStyle(document.documentElement);
+    const W = c.width, H = c.height, pad = 12;
+    const ys = stepResponse(rigOpts.bodyF, rigOpts.bodyZeta, rigOpts.bodyR, 2, 240);
+    const lo = Math.min(-0.25, ...ys), hi = Math.max(1.5, ...ys);
+    const Y = (v) => H - pad - ((v - lo) / (hi - lo)) * (H - pad * 2);
+    g.clearRect(0, 0, W, H);
+    g.strokeStyle = cs.getPropertyValue('--line'); g.lineWidth = 2;
+    g.beginPath(); g.moveTo(0, Y(0)); g.lineTo(W, Y(0)); g.stroke();
+    g.setLineDash([8, 6]); g.strokeStyle = cs.getPropertyValue('--muted');
+    g.beginPath(); g.moveTo(0, Y(1)); g.lineTo(W, Y(1)); g.stroke(); g.setLineDash([]);
+    g.strokeStyle = cs.getPropertyValue('--ember'); g.lineWidth = 3;
+    g.beginPath();
+    ys.forEach((v, i) => { const x = (i / (ys.length - 1)) * W; if (i) g.lineTo(x, Y(v)); else g.moveTo(x, Y(v)); });
+    g.stroke();
+    g.fillStyle = cs.getPropertyValue('--muted'); g.font = '20px ' + cs.getPropertyValue('--mono');
+    g.fillText('2 s', W - 40, H - 18);
   }
   function modeRow() {
     const row = document.createElement('div');
@@ -858,11 +1362,12 @@ function start(snapshot) {
   $('reset-tune').addEventListener('click', () => {
     Object.assign(params, DEFAULT_PARAMS);
     Object.assign(view, VIEW_DEFAULTS);
+    Object.assign(rigOpts, RIG_DEFAULTS);
     persist(); buildPanel();
     flash('Back to the spec defaults');
   });
   $('copy-tune').addEventListener('click', () => {
-    const text = JSON.stringify({ params, view: { zoom: view.zoom, camLag: view.camLag } }, null, 2);
+    const text = JSON.stringify(tuneData(), null, 2);
     const out = $('tune-json');
     out.value = text;
     out.hidden = false;
@@ -880,7 +1385,7 @@ function start(snapshot) {
   }
 
   // ---- HUD ---------------------------------------------------------------
-  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash');
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm');
   const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
   function updateHud() {
     hudShards.textContent = `${state.collected} / ${state.shards.length}`;
@@ -888,6 +1393,9 @@ function start(snapshot) {
     const cd = params.dashCooldown > 0 ? 1 - state.player.dashCooldown / params.dashCooldown : 1;
     hudDash.style.setProperty('--fill', String(cd));
     hudDash.classList.toggle('ready', state.player.dashCooldown <= 0);
+    const bpm = Math.round(60 + state.player.heat * 120);
+    hudBpm.textContent = String(bpm);
+    hudBpm.classList.toggle('hot', state.player.heat > 0.5);
   }
   function onWin() {
     const name = LEVELS[levelIndex].name;
@@ -908,6 +1416,7 @@ function start(snapshot) {
   window.addEventListener('resize', resize);
   resize();
   buildPanel();
+  drawResponse();
   centreCamera();
 
   let last = performance.now();
@@ -937,19 +1446,32 @@ function start(snapshot) {
       collectedSeen++;
     }
     renderer.updateFx(dt, p, ix, iy);
+    // Animation runs on real frame time; the follower clamps itself on long frames.
+    const adt = Math.min(dt, 0.1);
+    // Biometrics drive motion: a hot core makes the body twitchier.
+    setRigMotion(rigs.player, {
+      ...rigOpts,
+      bodyF: rigOpts.bodyF * (1 + 0.8 * p.heat),
+      bodyZeta: rigOpts.bodyZeta * (1 - 0.6 * p.heat),
+    });
+    updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy }, blocked);
+    state.critters.forEach((c, i) => {
+      const cx = c.px + (c.x - c.px) * view.alpha, cy = c.py + (c.y - c.py) * view.alpha;
+      updateRig(rigs.critters[i], adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, blocked);
+    });
     // Camera eases toward the player; lag is the time constant in seconds.
     const target = renderer.screenOf(ix, iy);
     const k = view.camLag > 0 ? 1 - Math.exp(-dt / view.camLag) : 1;
     view.camX += (target.x - view.camX) * k;
     view.camY += (target.y - 10 - view.camY) * k;
     const fit = Math.min(renderer.size.w, renderer.size.h) / 560;
-    renderer.draw(state, { ...view, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, params, clock);
+    renderer.draw(state, { ...view, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, rigs, clock);
     updateHud();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
-  window.claude?.hot?.snapshot?.(() => ({ tune: { params, view: { zoom: view.zoom, camLag: view.camLag } } }));
+  window.claude?.hot?.snapshot?.(() => ({ tune: tuneData() }));
 }
 
 const hot = window.claude?.hot;

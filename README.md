@@ -1,7 +1,10 @@
 # BiometricGame
 
-Isometric top-down game prototype, working title **Shardfield**. Move, dash,
-collect every shard in the level as fast as you can.
+Isometric top-down game prototype, working title **Shardfield**. You are a
+mechanical bug in a world of living bugs: move, dash, collect every shard as
+fast as you can. Dashing heats your core; your pulse and your motion show it.
+Bodies and legs are animated procedurally (second-order f/ζ/r motion plus
+IK legs), tunable live in the panel.
 
 ## Play
 
@@ -28,10 +31,12 @@ left, Dash button) also work.
 
 ```
 docs/SPEC.md       behaviour spec (source of truth for numbers)
-src/sim.js         simulation: movement, dash, collision, pickups
+src/sim.js         simulation: movement, dash, collision, pickups, heat, critters
+src/dynamics.js    second-order f/zeta/r follower (procedural motion)
+src/bug.js         six-legged rig: tripod gait, two-bone IK
 src/levels.js      ASCII level maps
 src/render.js      isometric canvas renderer
 src/main.js        loop, input, HUD, tunables panel
-test/sim.test.js   headless tests (node:test)
+test/*.test.js     headless tests (node:test)
 tools/build.mjs    single-file bundle
 ```

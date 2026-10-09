@@ -17,7 +17,23 @@ export const DEFAULT_PARAMS = {
   dashBuffer: 0.1,
   pickupRange: 0.35,
   diagonalMode: 'screen', // 'screen' | 'grid'
+  dashHeat: 0.34,
+  heatCool: 0.3,
+  critterRadius: 0.18,
+  critterSpeed: 1.1,
+  critterFleeSpeed: 3.2,
+  critterAccel: 12,
+  critterFear: 2.2,
 };
+
+// Seeded PRNG (mulberry32) kept in the state, so runs stay reproducible.
+export function rand(state) {
+  state.seed = (state.seed + 0x6d2b79f5) >>> 0;
+  let t = state.seed;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
 
 export function parseLevel(level) {
   const rows = level.map;
@@ -25,6 +41,7 @@ export function parseLevel(level) {
   const w = Math.max(...rows.map((r) => r.length));
   const solid = new Uint8Array(w * h);
   const shards = [];
+  const critters = [];
   let spawn = { x: w / 2, y: h / 2 };
   for (let ty = 0; ty < h; ty++) {
     for (let tx = 0; tx < w; tx++) {
@@ -32,9 +49,10 @@ export function parseLevel(level) {
       if (c === '#') solid[ty * w + tx] = 1;
       else if (c === 'P') spawn = { x: tx + 0.5, y: ty + 0.5 };
       else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === 'b') critters.push({ x: tx + 0.5, y: ty + 0.5 });
     }
   }
-  return { name: level.name, w, h, solid, shards, spawn };
+  return { name: level.name, w, h, solid, shards, critters, spawn };
 }
 
 export function isSolid(map, tx, ty) {
@@ -42,9 +60,14 @@ export function isSolid(map, tx, ty) {
   return map.solid[ty * map.w + tx] === 1;
 }
 
-export function createState(level) {
+export function createState(level, seed = 1) {
   const map = parseLevel(level);
   return {
+    seed: seed >>> 0,
+    critters: map.critters.map((c, i) => ({
+      x: c.x, y: c.y, px: c.x, py: c.y, vx: 0, vy: 0,
+      dirX: 0, dirY: 0, timer: 0.3 * i, fleeing: false,
+    })),
     map,
     player: {
       x: map.spawn.x, y: map.spawn.y,
@@ -53,6 +76,7 @@ export function createState(level) {
       faceX: Math.SQRT1_2, faceY: Math.SQRT1_2,
       dashTime: 0, dashCooldown: 0, dashBuffer: 0,
       dashX: 0, dashY: 0,
+      heat: 0, // 0..1, rises with each dash, cools over time
     },
     shards: map.shards.map((s) => ({ x: s.x, y: s.y, taken: false })),
     collected: 0,
@@ -169,6 +193,9 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     p.dashTime = params.dashDuration;
     p.dashCooldown = params.dashCooldown;
     p.dashBuffer = 0;
+    p.heat = Math.min(1, p.heat + params.dashHeat);
+  } else {
+    p.heat = Math.max(0, p.heat - params.heatCool * dt);
   }
 
   let mvx, mvy;
@@ -208,6 +235,8 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     }
   }
 
+  for (const c of state.critters) stepCritter(state, c, params, dt);
+
   if (!state.won) {
     state.time += dt;
     if (state.collected === state.shards.length) state.won = true;
@@ -216,9 +245,42 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   return state;
 }
 
-// Smallest gap between the player circle and any wall; negative = overlap.
-export function wallClearance(state, r) {
+// Critters wander, pause, and run from the player when it comes close.
+function stepCritter(state, c, params, dt) {
   const p = state.player;
+  c.px = c.x; c.py = c.y;
+  const dx = c.x - p.x, dy = c.y - p.y;
+  const d = Math.hypot(dx, dy);
+  let speed;
+  if (d < params.critterFear) {
+    c.fleeing = true;
+    const l = d || 1;
+    c.dirX = dx / l; c.dirY = dy / l;
+    speed = params.critterFleeSpeed;
+    c.timer = 0.4; // keep running a little after leaving the fear radius
+  } else {
+    c.timer -= dt;
+    if (c.timer <= 0) {
+      c.fleeing = false;
+      if (rand(state) < 0.3) {
+        c.dirX = 0; c.dirY = 0; // pause
+      } else {
+        const a = rand(state) * Math.PI * 2;
+        c.dirX = Math.cos(a); c.dirY = Math.sin(a);
+      }
+      c.timer = 0.8 + rand(state) * 1.8;
+    }
+    speed = c.fleeing ? params.critterFleeSpeed : params.critterSpeed;
+  }
+  [c.vx, c.vy] = approach(c.vx, c.vy, c.dirX * speed, c.dirY * speed, params.critterAccel * dt);
+  const want = Math.hypot(c.vx, c.vy);
+  move(state.map, c, { vx: c.vx, vy: c.vy }, dt, params.critterRadius);
+  // Pressed against a wall: pick a new direction on the next step.
+  if (want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
+}
+
+// Smallest gap between the player circle and any wall; negative = overlap.
+export function wallClearance(state, r, p = state.player) {
   let best = Infinity;
   const x0 = Math.floor(p.x) - 2, x1 = Math.floor(p.x) + 2;
   const y0 = Math.floor(p.y) - 2, y1 = Math.floor(p.y) + 2;

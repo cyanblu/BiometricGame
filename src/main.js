@@ -1,9 +1,23 @@
 // Browser entry: fixed-timestep loop, input, HUD and the tunables panel.
-import { createState, step, STEP, DEFAULT_PARAMS } from './sim.js';
+import { createState, step, STEP, DEFAULT_PARAMS, isSolid } from './sim.js';
 import { createRenderer } from './render.js';
 import { LEVELS } from './levels.js';
+import { createRig, updateRig, setRigMotion, RIG_DEFAULTS } from './bug.js';
+import { stepResponse } from './dynamics.js';
 
 const VIEW_DEFAULTS = { zoom: 1, camLag: 0.12 };
+const CRITTER_RIG = {
+  ...RIG_DEFAULTS, scale: 0.55, bodyF: 4, bodyZeta: 0.8, bodyR: 0, headF: 3, stepTime: 0.07,
+};
+// Body-motion presets. "Robot" is the setup from the procedural-animation
+// video (zeta 0.5, r -2: underdamped with anticipation).
+const MOTION_PRESETS = {
+  Default: { bodyF: 3, bodyZeta: 0.5, bodyR: 1 },
+  Robot: { bodyF: 2, bodyZeta: 0.5, bodyR: -2 },
+  Snappy: { bodyF: 6, bodyZeta: 1, bodyR: 0 },
+  Springy: { bodyF: 2.5, bodyZeta: 0.25, bodyR: 2 },
+  Heavy: { bodyF: 1.2, bodyZeta: 1.2, bodyR: 0 },
+};
 
 // Slider ranges for every tunable. `group` decides where it shows in the panel.
 const TUNABLES = [
@@ -15,6 +29,13 @@ const TUNABLES = [
   { key: 'dashDuration', label: 'Dash duration', unit: 's', min: 0.04, max: 0.5, step: 0.01, group: 'Dash' },
   { key: 'dashCooldown', label: 'Dash cooldown', unit: 's', min: 0, max: 2, step: 0.05, group: 'Dash' },
   { key: 'dashBuffer', label: 'Input buffer', unit: 's', min: 0, max: 0.3, step: 0.01, group: 'Dash' },
+  { key: 'bodyF', label: 'Frequency f', unit: 'Hz', min: 0.3, max: 10, step: 0.1, group: 'Body motion', rig: true },
+  { key: 'bodyZeta', label: 'Damping ζ', unit: '', min: 0, max: 2, step: 0.05, group: 'Body motion', rig: true },
+  { key: 'bodyR', label: 'Response r', unit: '', min: -3, max: 3, step: 0.1, group: 'Body motion', rig: true },
+  { key: 'headF', label: 'Head lag f', unit: 'Hz', min: 0.3, max: 10, step: 0.1, group: 'Body motion', rig: true },
+  { key: 'stepThreshold', label: 'Step distance', unit: 'tiles', min: 0.08, max: 0.4, step: 0.01, group: 'Legs', rig: true },
+  { key: 'stepTime', label: 'Step time', unit: 's', min: 0.04, max: 0.3, step: 0.01, group: 'Legs', rig: true },
+  { key: 'stepHeight', label: 'Step height', unit: 'tiles', min: 0, max: 0.35, step: 0.01, group: 'Legs', rig: true },
   { key: 'zoom', label: 'Zoom', unit: '×', min: 0.5, max: 2.5, step: 0.05, group: 'Camera', view: true },
   { key: 'camLag', label: 'Camera lag', unit: 's', min: 0, max: 0.6, step: 0.01, group: 'Camera', view: true },
 ];
@@ -33,6 +54,7 @@ function start(snapshot) {
   const stored = snapshot?.tune ?? load(STORE_KEY) ?? {};
   const params = { ...DEFAULT_PARAMS, ...stored.params };
   const view = { ...VIEW_DEFAULTS, ...stored.view, camX: 0, camY: 0, alpha: 0 };
+  const rigOpts = { ...RIG_DEFAULTS, ...stored.rig };
   let best = load(BEST_KEY) ?? {};
 
   const $ = (id) => document.getElementById(id);
@@ -40,6 +62,16 @@ function start(snapshot) {
   const renderer = createRenderer(canvas);
   let levelIndex = 0;
   let state = createState(LEVELS[levelIndex]);
+  const blocked = (x, y) => isSolid(state.map, Math.floor(x), Math.floor(y));
+  let rigs;
+  function makeRigs() {
+    const p = state.player;
+    rigs = {
+      player: createRig(p.x, p.y, Math.atan2(p.faceY, p.faceX), { ...rigOpts }),
+      critters: state.critters.map((c, i) => createRig(c.x, c.y, i * 1.3, CRITTER_RIG)),
+    };
+  }
+  makeRigs();
   let collectedSeen = 0;
   let started = false;
 
@@ -48,8 +80,9 @@ function start(snapshot) {
     view.camX = s.x; view.camY = s.y - 10;
   }
   function restart() {
-    state = createState(LEVELS[levelIndex]);
+    state = createState(LEVELS[levelIndex], (Date.now() >>> 0) || 1);
     collectedSeen = 0;
+    makeRigs();
     centreCamera();
     $('win').hidden = true;
   }
@@ -139,9 +172,15 @@ function start(snapshot) {
   const panel = $('panel');
   const rows = $('tunables');
   function persist() {
-    save(STORE_KEY, { params, view: { zoom: view.zoom, camLag: view.camLag } });
+    save(STORE_KEY, tuneData());
   }
-  function valueOf(t) { return t.view ? view[t.key] : params[t.key]; }
+  function tuneData() {
+    const rig = {};
+    for (const t of TUNABLES) if (t.rig) rig[t.key] = rigOpts[t.key];
+    return { params, view: { zoom: view.zoom, camLag: view.camLag }, rig };
+  }
+  const holder = (t) => (t.view ? view : t.rig ? rigOpts : params);
+  function valueOf(t) { return holder(t)[t.key]; }
   function fmt(t, v) {
     const dec = String(t.step).split('.')[1]?.length ?? 0;
     return Number(v).toFixed(dec);
@@ -156,6 +195,7 @@ function start(snapshot) {
         h.textContent = group;
         rows.append(h);
         if (group === 'Movement') rows.append(modeRow());
+        if (group === 'Body motion') rows.append(motionIntro());
       }
       const id = `t-${t.key}`;
       const row = document.createElement('div');
@@ -168,12 +208,52 @@ function start(snapshot) {
       out.textContent = `${fmt(t, valueOf(t))} ${t.unit}`;
       input.addEventListener('input', () => {
         const v = Number(input.value);
-        if (t.view) view[t.key] = v; else params[t.key] = v;
+        holder(t)[t.key] = v;
+        if (t.rig) drawResponse();
         out.textContent = `${fmt(t, v)} ${t.unit}`;
         persist();
       });
       rows.append(row);
     }
+    drawResponse();
+  }
+  // Step response of the current body settings: how the body follows when
+  // the target jumps by one unit. Same maths as the game uses.
+  function motionIntro() {
+    const box = document.createElement('div');
+    box.className = 'motion';
+    box.innerHTML = `<canvas id="response" width="536" height="200" aria-label="Step response plot"></canvas>
+      <p class="note">How the body catches up when its target jumps. Dashed line = target. Above it is overshoot, below zero is anticipation.</p>
+      <div class="presets"></div>`;
+    const pre = box.querySelector('.presets');
+    for (const [name, values] of Object.entries(MOTION_PRESETS)) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'btn chip'; b.textContent = name;
+      b.addEventListener('click', () => { Object.assign(rigOpts, values); persist(); buildPanel(); });
+      pre.append(b);
+    }
+    return box;
+  }
+  function drawResponse() {
+    const c = document.getElementById('response');
+    if (!c) return;
+    const g = c.getContext('2d');
+    const cs = getComputedStyle(document.documentElement);
+    const W = c.width, H = c.height, pad = 12;
+    const ys = stepResponse(rigOpts.bodyF, rigOpts.bodyZeta, rigOpts.bodyR, 2, 240);
+    const lo = Math.min(-0.25, ...ys), hi = Math.max(1.5, ...ys);
+    const Y = (v) => H - pad - ((v - lo) / (hi - lo)) * (H - pad * 2);
+    g.clearRect(0, 0, W, H);
+    g.strokeStyle = cs.getPropertyValue('--line'); g.lineWidth = 2;
+    g.beginPath(); g.moveTo(0, Y(0)); g.lineTo(W, Y(0)); g.stroke();
+    g.setLineDash([8, 6]); g.strokeStyle = cs.getPropertyValue('--muted');
+    g.beginPath(); g.moveTo(0, Y(1)); g.lineTo(W, Y(1)); g.stroke(); g.setLineDash([]);
+    g.strokeStyle = cs.getPropertyValue('--ember'); g.lineWidth = 3;
+    g.beginPath();
+    ys.forEach((v, i) => { const x = (i / (ys.length - 1)) * W; if (i) g.lineTo(x, Y(v)); else g.moveTo(x, Y(v)); });
+    g.stroke();
+    g.fillStyle = cs.getPropertyValue('--muted'); g.font = '20px ' + cs.getPropertyValue('--mono');
+    g.fillText('2 s', W - 40, H - 18);
   }
   function modeRow() {
     const row = document.createElement('div');
@@ -195,11 +275,12 @@ function start(snapshot) {
   $('reset-tune').addEventListener('click', () => {
     Object.assign(params, DEFAULT_PARAMS);
     Object.assign(view, VIEW_DEFAULTS);
+    Object.assign(rigOpts, RIG_DEFAULTS);
     persist(); buildPanel();
     flash('Back to the spec defaults');
   });
   $('copy-tune').addEventListener('click', () => {
-    const text = JSON.stringify({ params, view: { zoom: view.zoom, camLag: view.camLag } }, null, 2);
+    const text = JSON.stringify(tuneData(), null, 2);
     const out = $('tune-json');
     out.value = text;
     out.hidden = false;
@@ -217,7 +298,7 @@ function start(snapshot) {
   }
 
   // ---- HUD ---------------------------------------------------------------
-  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash');
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm');
   const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
   function updateHud() {
     hudShards.textContent = `${state.collected} / ${state.shards.length}`;
@@ -225,6 +306,9 @@ function start(snapshot) {
     const cd = params.dashCooldown > 0 ? 1 - state.player.dashCooldown / params.dashCooldown : 1;
     hudDash.style.setProperty('--fill', String(cd));
     hudDash.classList.toggle('ready', state.player.dashCooldown <= 0);
+    const bpm = Math.round(60 + state.player.heat * 120);
+    hudBpm.textContent = String(bpm);
+    hudBpm.classList.toggle('hot', state.player.heat > 0.5);
   }
   function onWin() {
     const name = LEVELS[levelIndex].name;
@@ -245,6 +329,7 @@ function start(snapshot) {
   window.addEventListener('resize', resize);
   resize();
   buildPanel();
+  drawResponse();
   centreCamera();
 
   let last = performance.now();
@@ -274,19 +359,32 @@ function start(snapshot) {
       collectedSeen++;
     }
     renderer.updateFx(dt, p, ix, iy);
+    // Animation runs on real frame time; the follower clamps itself on long frames.
+    const adt = Math.min(dt, 0.1);
+    // Biometrics drive motion: a hot core makes the body twitchier.
+    setRigMotion(rigs.player, {
+      ...rigOpts,
+      bodyF: rigOpts.bodyF * (1 + 0.8 * p.heat),
+      bodyZeta: rigOpts.bodyZeta * (1 - 0.6 * p.heat),
+    });
+    updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy }, blocked);
+    state.critters.forEach((c, i) => {
+      const cx = c.px + (c.x - c.px) * view.alpha, cy = c.py + (c.y - c.py) * view.alpha;
+      updateRig(rigs.critters[i], adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, blocked);
+    });
     // Camera eases toward the player; lag is the time constant in seconds.
     const target = renderer.screenOf(ix, iy);
     const k = view.camLag > 0 ? 1 - Math.exp(-dt / view.camLag) : 1;
     view.camX += (target.x - view.camX) * k;
     view.camY += (target.y - 10 - view.camY) * k;
     const fit = Math.min(renderer.size.w, renderer.size.h) / 560;
-    renderer.draw(state, { ...view, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, params, clock);
+    renderer.draw(state, { ...view, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, rigs, clock);
     updateHud();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
-  window.claude?.hot?.snapshot?.(() => ({ tune: { params, view: { zoom: view.zoom, camLag: view.camLag } } }));
+  window.claude?.hot?.snapshot?.(() => ({ tune: tuneData() }));
 }
 
 const hot = window.claude?.hot;

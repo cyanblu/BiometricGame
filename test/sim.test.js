@@ -139,3 +139,39 @@ test('deterministic: same inputs give the same state', () => {
   const b = run(createState(LEVELS[0]), script, 10);
   assert.deepEqual([a.player.x, a.player.y, a.collected], [b.player.x, b.player.y, b.collected]);
 });
+
+test('critters never end up inside walls and the run is reproducible', () => {
+  const script = (i) => ({ x: Math.sin(i / 31), y: Math.cos(i / 19), dash: i % 50 === 0 });
+  const a = createState(LEVELS[0], 7);
+  assert.ok(a.critters.length >= 4);
+  for (let i = 0; i < 60 * 60; i++) {
+    step(a, script(i), P);
+    for (const c of a.critters) {
+      const gap = wallClearance(a, P.critterRadius, c);
+      assert.ok(gap > -1e-6, `critter overlap ${gap} at tick ${i}`);
+    }
+  }
+  const b = run(createState(LEVELS[0], 7), script, 60);
+  assert.deepEqual(a.critters.map((c) => [c.x, c.y]), b.critters.map((c) => [c.x, c.y]));
+});
+
+test('a critter runs from the player when it comes close', () => {
+  const lvl = { name: 'c', map: ['##########', '#........#', '#.P..b...#', '#........#', '##########'] };
+  const s = createState(lvl);
+  const c = s.critters[0];
+  s.player.x = c.x - P.critterFear + 0.3; s.player.y = c.y;
+  const d0 = Math.hypot(c.x - s.player.x, c.y - s.player.y);
+  run(s, {}, 0.5);
+  assert.ok(c.fleeing);
+  assert.ok(Math.hypot(c.x - s.player.x, c.y - s.player.y) > d0 + 0.5);
+});
+
+test('heat: each dash adds dashHeat, it cools at heatCool per second, capped at 1', () => {
+  const s = createState(open);
+  step(s, { x: 1, y: 0, dash: true });
+  assert.ok(Math.abs(s.player.heat - P.dashHeat) < 1e-9);
+  run(s, {}, 0.5);
+  assert.ok(Math.abs(s.player.heat - (P.dashHeat - P.heatCool * 0.5)) < 1e-6);
+  for (let i = 0; i < 6; i++) { step(s, { dash: true }); run(s, {}, P.dashCooldown); }
+  assert.ok(s.player.heat <= 1 && s.player.heat > 0.8, `heat ${s.player.heat}`);
+});

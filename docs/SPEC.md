@@ -1,4 +1,7 @@
-# Shardfield behaviour spec (v0.1)
+# Shardfield behaviour spec (v0.2)
+
+Premise: you control a small mechanical bug in a world of living bugs. The
+bug's vital signs (biometrics) are part of play and show up in how it moves.
 
 Working title. This file is the reference the code is tested against. When a
 number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
@@ -62,6 +65,80 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
 4. On contact, the velocity component into the wall is removed; the
    component along the wall is kept (the player slides).
 
+## Core heat (biometrics)
+
+| Property | Default | Unit |
+|---|---|---|
+| Heat added per dash | 0.34 | of 1 |
+| Cooling | 0.30 | per s |
+
+1. Heat lives in the simulation (`player.heat`, 0 to 1, capped at 1).
+2. Pulse shown in the HUD and on the bug's back light: `60 + 120 × heat` BPM.
+   The light turns from teal to red above heat 0.5.
+3. Heat changes animation only, not gameplay (for now): body frequency is
+   multiplied by `1 + 0.8 × heat` and body damping by `1 − 0.6 × heat`, so a
+   hot bug moves twitchier and wobblier.
+
+## Procedural motion
+
+Animation is separate from the simulation and never feeds back into it.
+
+### Follower (`src/dynamics.js`)
+
+Second-order system `y + k1·y' + k2·y'' = x + k3·x'` with
+`k1 = ζ/(πf)`, `k2 = 1/(2πf)²`, `k3 = rζ/(2πf)`:
+
+- `f` (Hz): how fast it responds.
+- `ζ`: 0 rings forever, below 1 overshoots, 1 and above settles without overshoot.
+- `r`: below 0 anticipates (moves away first), 0 eases in, above 1 overshoots at the start.
+
+Integrated with semi-implicit Euler. `k2` is raised to at least
+`max(T²/2 + T·k1/2, T·k1)` for frame time `T`, so long frames cannot make it
+blow up or jitter.
+
+### Bug rig (`src/bug.js`)
+
+| Property | Player default | Unit |
+|---|---|---|
+| Body follow f / ζ / r | 3 / 0.5 / 1 | |
+| Heading f / ζ / r | 2.5 / 1 / 0 | |
+| Head follow f / ζ / r | 1.6 / 0.6 / 0 | |
+| Thigh / shin length | 0.28 / 0.36 | tiles |
+| Step distance | 0.20 | tiles |
+| Step time | 0.10 | s |
+| Step height | 0.14 | tiles |
+
+1. The body follows the simulated position through a follower; the head
+   follows a point in front of the body with a slower follower (secondary motion).
+2. Six legs, tripod gait: front-left, middle-right and back-left step
+   together, then the other three. A group lifts only when the other group is
+   fully planted, so at most three feet are ever in the air.
+3. A group lifts when one of its feet is further than the step distance from
+   its rest spot. The rest spot leads ahead by `velocity × step time × 0.8`.
+4. Feet never land on walls; the target is pulled toward the body instead.
+5. Two-bone IK, knee bent upward. At walking and top speed feet stay within
+   leg reach on at least 98 % of frames (they may overstretch during a dash).
+6. Presets in the panel: Default, Robot (2 / 0.5 / −2, from the
+   procedural-animation video), Snappy, Springy, Heavy.
+
+## Critters
+
+| Property | Default | Unit |
+|---|---|---|
+| Radius | 0.18 | tiles |
+| Wander speed | 1.1 | tiles/s |
+| Flee speed | 3.2 | tiles/s |
+| Fear radius | 2.2 | tiles |
+
+1. Spawn at `b` in the level map. Movement is in the simulation, using a
+   seeded PRNG stored in the state, so a run is reproducible from its seed.
+2. Every 0.8–2.6 s a critter picks a new random heading, or pauses (30 %).
+3. Inside the fear radius it runs straight away from the player, and keeps
+   running for 0.4 s after leaving it.
+4. Same wall collision as the player. A critter pressed against a wall picks
+   a new direction.
+5. Drawn with the same rig at 0.55 scale.
+
 ## Shards
 
 1. Picked up when the player centre is within `radius + 0.35` of the shard.
@@ -70,6 +147,7 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
 
 ## Not decided yet
 
-- What the game is about beyond moving and collecting.
-- Enemies, hazards, health.
+- What the shards are in this world, and what the goal is beyond collecting.
+- Whether heat should cost something in play (overheating, slower dash).
+- How the player interacts with other bugs beyond scaring them.
 - Art direction beyond placeholder shapes.

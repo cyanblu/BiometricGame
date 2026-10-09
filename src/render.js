@@ -1,7 +1,9 @@
 // Canvas renderer. Reads simulation state, never changes it.
 import { TILE_W, TILE_H, isSolid } from './sim.js';
+import { hipOf, legIK } from './bug.js';
 
 const WALL_H = 34;
+const Z_PX = 36; // screen pixels per tile of height
 const HW = TILE_W / 2;
 const HH = TILE_H / 2;
 
@@ -13,7 +15,10 @@ export function readPalette(el) {
     floor: v('--sand'), floor2: v('--sand-2'), floorEdge: v('--sand-edge'),
     wallTop: v('--slate-top'), wallLeft: v('--slate-left'), wallRight: v('--slate-right'),
     shard: v('--ember'), shardCore: v('--ember-core'),
-    body: v('--hull'), visor: v('--visor'), ink: v('--ink'),
+    body: v('--hull'), hullShade: v('--hull-shade'), limb: v('--limb'),
+    visor: v('--visor'), hot: v('--hot'), ink: v('--ink'),
+    critters: [[v('--beetle-a'), v('--beetle-a-shade')], [v('--beetle-b'), v('--beetle-b-shade')]],
+    critterLimb: v('--beetle-limb'),
   };
 }
 
@@ -52,7 +57,8 @@ export function createRenderer(canvas) {
     ctx.closePath();
   }
 
-  function drawWall(map, tx, ty) {
+  function drawWall(map, tx, ty, alpha = 1) {
+    ctx.globalAlpha = alpha;
     // Only the faces pointing at the camera (+x and +y) can be visible.
     if (!isSolid(map, tx, ty + 1) || ty + 1 >= map.h) {
       quad(tx, ty + 1, tx + 1, ty + 1, WALL_H);
@@ -66,6 +72,16 @@ export function createRenderer(canvas) {
     ctx.fillStyle = pal.wallTop; ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 1; ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // True when a wall drawn after the player would cover its sprite.
+  function hidesPlayer(tx, ty, pr) {
+    const cx = sx(pr.pos.x, pr.pos.y), cy = sy(pr.pos.x, pr.pos.y) - 10;
+    const left = (tx - ty - 1) * HW, right = (tx - ty + 1) * HW;
+    const top = sy(tx, ty) - WALL_H, bottom = sy(tx + 1, ty + 1);
+    const R = 26;
+    return cx + R > left && cx - R < right && cy + R > top && cy - R < bottom;
   }
 
   function drawShard(s, t) {
@@ -90,44 +106,107 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
-  function playerShape(x, y, p, alpha, outlineOnly) {
-    const bodyW = 11, bodyH = 26;
-    const top = y - bodyH;
+  // Bug drawing. style: { shell, shade, limb, legW, led (0..1 heat) | null }.
+  const P3 = (x, y, z) => [sx(x, y), sy(x, y) - z * Z_PX];
+
+  function ellipsePath(cx, cy, z, heading, a, b) {
+    const c = Math.cos(heading), s = Math.sin(heading);
+    ctx.beginPath();
+    for (let i = 0; i <= 24; i++) {
+      const t = (i / 24) * Math.PI * 2;
+      const ex = Math.cos(t) * a, ey = Math.sin(t) * b;
+      const [px, py] = P3(cx + ex * c - ey * s, cy + ex * s + ey * c, z);
+      if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    }
+    ctx.closePath();
+  }
+
+  function drawLeg(rig, leg, style) {
+    const o = rig.opts;
+    const hip = hipOf(rig, leg);
+    const foot = { x: leg.foot.x, y: leg.foot.y, z: leg.lift };
+    const knee = legIK(hip, foot, o.thigh * o.scale, o.shin * o.scale);
+    const [hx, hy] = P3(hip.x, hip.y, hip.z);
+    const [kx, ky] = P3(knee.x, knee.y, knee.z);
+    const [fx2, fy2] = P3(foot.x, foot.y, foot.z);
+    ctx.strokeStyle = style.limb; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.lineWidth = style.legW;
+    ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(kx, ky); ctx.lineTo(fx2, fy2); ctx.stroke();
+    if (style.led != null) {
+      ctx.fillStyle = style.shade;
+      ctx.beginPath(); ctx.arc(kx, ky, style.legW * 0.7, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function drawBug(rig, style, alpha = 1) {
+    const o = rig.opts, k = o.scale;
+    const { x, y } = rig.pos, hd = rig.heading;
+    const z = o.bodyHeight * k;
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.beginPath();
-    ctx.moveTo(x - bodyW, y - 6);
-    ctx.lineTo(x - bodyW, top + bodyW);
-    ctx.arc(x, top + bodyW, bodyW, Math.PI, 0);
-    ctx.lineTo(x + bodyW, y - 6);
-    ctx.ellipse(x, y - 6, bodyW, bodyW * 0.5, 0, 0, Math.PI);
-    ctx.closePath();
-    if (outlineOnly) {
-      ctx.strokeStyle = pal.ink; ctx.lineWidth = 1.5; ctx.stroke();
-    } else {
-      ctx.fillStyle = pal.body; ctx.fill();
-      // Visor faces the movement direction, squashed by the projection.
-      const fx2 = sx(p.faceX, p.faceY), fy2 = sy(p.faceX, p.faceY);
-      const fl = Math.hypot(fx2, fy2) || 1;
-      const vx = (fx2 / fl) * bodyW * 0.55;
-      const front = fy2 > -0.2;
-      if (front) {
-        ctx.beginPath();
-        ctx.ellipse(x + vx, top + bodyW + 1, 6.5, 3.6, 0, 0, Math.PI * 2);
-        ctx.fillStyle = pal.visor; ctx.fill();
-      }
+    // Ground shadow.
+    ellipsePath(x, y, 0, hd, 0.3 * k, 0.2 * k);
+    ctx.fillStyle = 'rgba(10,12,24,0.28)'; ctx.fill();
+    for (const leg of rig.legs) {
+      ctx.fillStyle = 'rgba(10,12,24,0.25)';
+      const [fx2, fy2] = P3(leg.foot.x, leg.foot.y, 0);
+      ctx.beginPath(); ctx.ellipse(fx2, fy2, 2.5 * k + 1, 1.3 * k + 0.6, 0, 0, Math.PI * 2); ctx.fill();
     }
+    // Far legs, body, head, near legs.
+    const depth = (l) => { const h = hipOf(rig, l); return h.x + h.y; };
+    const mid = x + y;
+    const legs = [...rig.legs].sort((a, b) => depth(a) - depth(b));
+    for (const l of legs) if (depth(l) < mid) drawLeg(rig, l, style);
+    ellipsePath(x, y, z - 0.05 * k, hd, 0.27 * k, 0.17 * k);
+    ctx.fillStyle = style.shade; ctx.fill();
+    ellipsePath(x, y, z, hd, 0.26 * k, 0.16 * k);
+    ctx.fillStyle = style.shell; ctx.fill();
+    // Wing seam or panel line down the back.
+    const c = Math.cos(hd), s = Math.sin(hd);
+    const [ax, ay] = P3(x + c * 0.2 * k, y + s * 0.2 * k, z + 0.01);
+    const [bx, by] = P3(x - c * 0.24 * k, y - s * 0.24 * k, z + 0.01);
+    ctx.strokeStyle = style.shade; ctx.lineWidth = Math.max(1, 1.5 * k);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    if (style.led != null) {
+      // Heartbeat light: beats faster and turns hot with core heat.
+      const bpm = 60 + style.led * 120;
+      const ph = (rig.time * bpm / 60) % 1;
+      const pulse = Math.exp(-ph * 9) + 0.6 * Math.exp(-Math.max(0, ph - 0.18) * 12) * (ph > 0.18 ? 1 : 0);
+      const [lx, ly] = P3(x - c * 0.12 * k, y - s * 0.12 * k, z + 0.02);
+      ctx.fillStyle = style.led > 0.5 ? pal.hot : pal.visor;
+      ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 6 + 10 * pulse;
+      ctx.globalAlpha = alpha * (0.45 + 0.55 * Math.min(1, pulse));
+      ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0; ctx.globalAlpha = alpha;
+    }
+    // Head lags behind the body (its own, slower follower).
+    const hx = rig.headPos.x, hy = rig.headPos.y;
+    ellipsePath(hx, hy, z + 0.02 * k, hd, 0.11 * k, 0.1 * k);
+    ctx.fillStyle = style.shade; ctx.fill();
+    ellipsePath(hx, hy, z + 0.05 * k, hd, 0.1 * k, 0.09 * k);
+    ctx.fillStyle = style.shell; ctx.fill();
+    if (style.led != null) {
+      ellipsePath(hx + c * 0.06 * k, hy + s * 0.06 * k, z + 0.07 * k, hd, 0.045 * k, 0.07 * k);
+      ctx.fillStyle = pal.visor; ctx.fill();
+    }
+    // Antennae.
+    ctx.strokeStyle = style.limb; ctx.lineWidth = Math.max(1, 1.2 * k);
+    for (const side of [-1, 1]) {
+      const [rx, ry] = P3(hx + c * 0.07 * k - s * side * 0.04 * k, hy + s * 0.07 * k + c * side * 0.04 * k, z + 0.07 * k);
+      const tx = hx + c * 0.24 * k - s * side * 0.13 * k, ty = hy + s * 0.24 * k + c * side * 0.13 * k;
+      const [qx, qy] = P3(tx, ty, z + 0.2 * k);
+      ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(qx, qy); ctx.stroke();
+    }
+    for (const l of legs) if (depth(l) >= mid) drawLeg(rig, l, style);
     ctx.restore();
   }
 
-  function drawPlayer(x, y, p, params) {
-    const r = params.radius * Math.SQRT2;
-    ctx.fillStyle = 'rgba(10,12,24,0.35)';
-    ctx.beginPath(); ctx.ellipse(x, y, r * HW, r * HH, 0, 0, Math.PI * 2); ctx.fill();
-    for (const g of fx.trail) {
-      playerShape(g.x, g.y, p, g.life * 0.35, false);
-    }
-    playerShape(x, y, p, 1, false);
+  function playerStyle(heat) {
+    return { shell: pal.body, shade: pal.hullShade, limb: pal.limb, legW: 3, led: heat };
+  }
+  function critterStyle(i) {
+    const [shell, shade] = pal.critters[i % pal.critters.length];
+    return { shell, shade, limb: pal.critterLimb, legW: 1.6, led: null };
   }
 
   function burst(x, y) {
@@ -144,10 +223,10 @@ export function createRenderer(canvas) {
     fx.particles = fx.particles.filter((q) => q.life > 0);
     for (const g of fx.trail) g.life -= dt * 4;
     fx.trail = fx.trail.filter((g) => g.life > 0);
-    if (p.dashTime > 0) fx.trail.push({ x: sx(px, py), y: sy(px, py), life: 1 });
+    if (p.dashTime > 0) fx.trail.push({ x: px, y: py, life: 1 });
   }
 
-  function draw(state, view, params, t) {
+  function draw(state, view, rigs, t) {
     const { map } = state;
     const p = state.player;
     const px = p.px + (p.x - p.px) * view.alpha;
@@ -190,17 +269,31 @@ export function createRenderer(canvas) {
       }
     }
     for (const s of state.shards) if (!s.taken) items.push({ d: s.x + s.y, k: 1, s });
-    items.push({ d: px + py, k: 2 });
+    rigs.critters.forEach((rig, i) => items.push({ d: rig.pos.x + rig.pos.y, k: 3, rig, i }));
+    items.push({ d: rigs.player.pos.x + rigs.player.pos.y, k: 2 });
     items.sort((a, b) => a.d - b.d || a.k - b.k);
 
     for (const it of items) {
-      if (it.k === 0) drawWall(map, it.tx, it.ty);
+      if (it.k === 0) {
+        const front = it.d > rigs.player.pos.x + rigs.player.pos.y;
+        drawWall(map, it.tx, it.ty, front && hidesPlayer(it.tx, it.ty, rigs.player) ? 0.35 : 1);
+      }
       else if (it.k === 1) drawShard(it.s, t);
-      else drawPlayer(sx(px, py), sy(px, py), p, params);
+      else if (it.k === 3) drawBug(it.rig, critterStyle(it.i));
+      else {
+        const pr = rigs.player, z = pr.opts.bodyHeight * pr.opts.scale;
+        for (const g of fx.trail) {
+          ellipsePath(g.x, g.y, z, pr.heading, 0.26, 0.16);
+          ctx.fillStyle = pal.visor; ctx.globalAlpha = g.life * 0.3; ctx.fill(); ctx.globalAlpha = 1;
+        }
+        drawBug(pr, playerStyle(p.heat));
+      }
     }
 
     // Outline on top so the player stays visible behind walls.
-    playerShape(sx(px, py), sy(px, py), p, 0.3, true);
+    const pr = rigs.player;
+    ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight * pr.opts.scale, pr.heading, 0.26, 0.16);
+    ctx.strokeStyle = pal.ink; ctx.globalAlpha = 0.3; ctx.lineWidth = 1.5; ctx.stroke(); ctx.globalAlpha = 1;
 
     for (const q of fx.particles) {
       ctx.globalAlpha = Math.max(0, q.life);
