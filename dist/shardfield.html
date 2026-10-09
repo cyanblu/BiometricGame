@@ -1,0 +1,959 @@
+<title>Shardfield Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: full-bleed canvas diorama; HUD pinned to corners; tunables in a side drawer (bottom sheet on phones).
+   Single dark look on purpose: the game is a night scene in both host themes. */
+:root {
+  --night: #141829;
+  --night-2: #232a45;
+  --sand: #d9c8a4;
+  --sand-2: #cfbc95;
+  --sand-edge: #8d7a5c;
+  --slate-top: #8190b6;
+  --slate-left: #5a668c;
+  --slate-right: #434d70;
+  --ember: #ffb547;
+  --ember-core: #fff1c9;
+  --hull: #f1ece2;
+  --visor: #27b3a6;
+  --ink: #ebe8f4;
+  --muted: #a3a8c3;
+  --glass: rgba(20, 24, 41, 0.78);
+  --line: rgba(235, 232, 244, 0.14);
+  --display: "Chakra Petch", "Trebuchet MS", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; overflow: hidden; background: var(--night); color: var(--ink);
+  font: 14px/1.4 var(--mono); -webkit-user-select: none; user-select: none;
+}
+#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+.hud {
+  position: fixed; left: 0; right: 0; top: 0; pointer-events: none;
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) 16px 0;
+}
+.brand { font-family: var(--display); font-weight: 700; font-size: 20px; letter-spacing: 0.04em; line-height: 1; }
+.brand small { display: block; margin-top: 6px; font: 500 11px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.stats { display: flex; gap: 18px; align-items: flex-start; font-variant-numeric: tabular-nums; }
+.stat { display: grid; gap: 4px; text-align: right; }
+.stat b { font: 700 20px/1 var(--display); }
+.stat span { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.stat b.shards { color: var(--ember); }
+#hud-dash { --fill: 1; width: 54px; height: 6px; margin-top: 7px; border-radius: 3px; background: var(--line); position: relative; overflow: hidden; }
+#hud-dash::after { content: ""; position: absolute; inset: 0; width: calc(var(--fill) * 100%); background: var(--muted); }
+#hud-dash.ready::after { background: var(--visor); }
+
+.btn {
+  pointer-events: auto; font: 500 12px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink); background: var(--glass); border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px 12px; cursor: pointer;
+}
+.btn:hover { border-color: var(--muted); }
+.btn:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+#tune-btn { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); }
+
+.keys {
+  position: fixed; left: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  color: var(--muted); font-size: 12px; pointer-events: none;
+}
+.keys kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
+
+#intro, #win {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(360px, calc(100% - 32px)); box-sizing: border-box;
+  background: var(--glass); border: 1px solid var(--line); border-radius: 10px;
+  padding: 20px 22px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  display: grid; gap: 10px;
+}
+#intro h1, #win h2 { margin: 0; font: 700 26px/1.05 var(--display); text-wrap: balance; }
+#intro p, #win p { margin: 0; color: var(--muted); }
+#intro .go { color: var(--ember); font-weight: 500; }
+#win-time { font: 700 34px/1 var(--display); color: var(--ember); font-variant-numeric: tabular-nums; }
+
+#panel {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 300px; box-sizing: border-box; overflow-y: auto;
+  background: var(--glass); border-left: 1px solid var(--line);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
+  display: grid; align-content: start; gap: 12px; user-select: text; -webkit-user-select: text;
+}
+#panel header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#panel h2 { margin: 0; font: 700 18px var(--display); letter-spacing: 0.04em; }
+#panel p.note { margin: 0; color: var(--muted); font-size: 12px; }
+#tunables { display: grid; gap: 10px; }
+#tunables h3 { margin: 6px 0 0; font: 500 10px var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--ember); }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: baseline; }
+.row label { font-size: 12px; }
+.row output { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.row input, .row select { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--ember); }
+.row select { font: 12px var(--mono); color: var(--ink); background: var(--night); border: 1px solid var(--line); border-radius: 4px; padding: 5px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#tune-json { width: 100%; box-sizing: border-box; min-height: 160px; font: 11px var(--mono); color: var(--ink); background: var(--night); border: 1px solid var(--line); border-radius: 4px; padding: 8px; resize: vertical; }
+
+#toast {
+  position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 70px); transform: translateX(-50%);
+  background: var(--glass); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; font-size: 12px;
+  max-width: calc(100% - 32px); box-sizing: border-box;
+}
+
+#stick {
+  position: fixed; left: var(--ox); top: var(--oy); width: 96px; height: 96px; margin: -48px 0 0 -48px;
+  border-radius: 50%; border: 1px solid var(--line); background: rgba(20, 24, 41, 0.35); pointer-events: none;
+}
+#stick::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px;
+  border-radius: 50%; background: rgba(235, 232, 244, 0.5); transform: translate(var(--kx), var(--ky));
+}
+#dash-btn {
+  display: none; position: fixed; right: 20px; bottom: calc(env(safe-area-inset-bottom, 0px) + 72px);
+  width: 76px; height: 76px; border-radius: 50%; font: 700 13px var(--display); letter-spacing: 0.08em;
+  color: var(--night); background: var(--ember); border: 0; touch-action: none;
+}
+@media (pointer: coarse) {
+  #dash-btn { display: block; }
+  .keys { display: none; }
+}
+@media (max-width: 560px) {
+  #panel { top: auto; left: 0; width: 100%; max-height: 62%; border-left: 0; border-top: 1px solid var(--line); border-radius: 12px 12px 0 0; }
+  .brand small { display: none; }
+  .stats { gap: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #intro, #win, #panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+</style>
+
+<canvas id="game" aria-label="Isometric play area"></canvas>
+
+<div class="hud">
+  <div class="brand">Shardfield<small>Prototype 0.1 · Courtyard</small></div>
+  <div class="stats">
+    <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Shards</span></div>
+    <div class="stat"><b id="hud-time">0:00.00</b><span>Time</span></div>
+    <div class="stat"><div id="hud-dash" class="ready"></div><span>Dash</span></div>
+  </div>
+</div>
+
+<div class="keys"><kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>T</kbd> tune</div>
+<button class="btn" id="tune-btn" type="button" aria-expanded="false" aria-controls="panel">Tune</button>
+<button id="dash-btn" type="button">DASH</button>
+<div id="stick" hidden></div>
+
+<section id="intro">
+  <h1>Collect every shard</h1>
+  <p><span id="intro-count">Nine</span> shards are scattered around the courtyard. Grab them all as fast as you can.</p>
+  <p>Keyboard, gamepad or touch. On a phone, drag on the left to move and tap Dash.</p>
+  <p class="go">Press a move key or tap to start.</p>
+</section>
+
+<section id="win" hidden>
+  <h2>All shards collected</h2>
+  <div id="win-time">0:00.00</div>
+  <p id="win-best"></p>
+  <div class="actions"><button class="btn" id="again" type="button">Run again (R)</button></div>
+</section>
+
+<aside id="panel" hidden aria-label="Tunables">
+  <header><h2>Tunables</h2><button class="btn" id="close-panel" type="button">Close</button></header>
+  <p class="note">Changes apply instantly. Defaults come from docs/SPEC.md. Copy the values back to me when a feel is right.</p>
+  <div id="tunables"></div>
+  <div class="actions">
+    <button class="btn" id="copy-tune" type="button">Copy values</button>
+    <button class="btn" id="reset-tune" type="button">Reset to spec</button>
+  </div>
+  <textarea id="tune-json" hidden readonly aria-label="Current tunables as JSON"></textarea>
+</aside>
+
+<div id="toast" hidden role="status"></div>
+
+<script>
+(() => {
+// ---- src/sim.js
+// Pure game simulation. No DOM, no canvas, no randomness: the same inputs
+// always produce the same state, so it can be tested headless in Node.
+// Behaviour and numbers are specified in docs/SPEC.md.
+
+const STEP = 1 / 60;
+const TILE_W = 64;
+const TILE_H = 32;
+
+const DEFAULT_PARAMS = {
+  radius: 0.3,
+  maxSpeed: 4.5,
+  accel: 30,
+  decel: 35,
+  dashSpeed: 13,
+  dashDuration: 0.14,
+  dashCooldown: 0.55,
+  dashBuffer: 0.1,
+  pickupRange: 0.35,
+  diagonalMode: 'screen', // 'screen' | 'grid'
+};
+
+function parseLevel(level) {
+  const rows = level.map;
+  const h = rows.length;
+  const w = Math.max(...rows.map((r) => r.length));
+  const solid = new Uint8Array(w * h);
+  const shards = [];
+  let spawn = { x: w / 2, y: h / 2 };
+  for (let ty = 0; ty < h; ty++) {
+    for (let tx = 0; tx < w; tx++) {
+      const c = rows[ty][tx] ?? '#';
+      if (c === '#') solid[ty * w + tx] = 1;
+      else if (c === 'P') spawn = { x: tx + 0.5, y: ty + 0.5 };
+      else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5 });
+    }
+  }
+  return { name: level.name, w, h, solid, shards, spawn };
+}
+
+function isSolid(map, tx, ty) {
+  if (tx < 0 || ty < 0 || tx >= map.w || ty >= map.h) return true;
+  return map.solid[ty * map.w + tx] === 1;
+}
+
+function createState(level) {
+  const map = parseLevel(level);
+  return {
+    map,
+    player: {
+      x: map.spawn.x, y: map.spawn.y,
+      px: map.spawn.x, py: map.spawn.y, // position before the last step, for render interpolation
+      vx: 0, vy: 0,
+      faceX: Math.SQRT1_2, faceY: Math.SQRT1_2,
+      dashTime: 0, dashCooldown: 0, dashBuffer: 0,
+      dashX: 0, dashY: 0,
+    },
+    shards: map.shards.map((s) => ({ x: s.x, y: s.y, taken: false })),
+    collected: 0,
+    time: 0,
+    won: false,
+    tick: 0,
+  };
+}
+
+function worldToScreen(x, y) {
+  return { x: (x - y) * (TILE_W / 2), y: (x + y) * (TILE_H / 2) };
+}
+
+// Screen-space stick (y down) to a world-space direction with length <= 1.
+function inputToWorld(ix, iy, mode) {
+  const mag = Math.min(1, Math.hypot(ix, iy));
+  if (mag < 1e-6) return { x: 0, y: 0, mag: 0 };
+  let wx, wy;
+  if (mode === 'grid') {
+    wx = ix + iy;
+    wy = iy - ix;
+  } else {
+    // Inverse of worldToScreen, so the projected direction matches the input.
+    wx = ix / TILE_W + iy / TILE_H;
+    wy = iy / TILE_H - ix / TILE_W;
+  }
+  const len = Math.hypot(wx, wy);
+  return { x: (wx / len) * mag, y: (wy / len) * mag, mag };
+}
+
+function approach(vx, vy, tx, ty, maxDelta) {
+  const dx = tx - vx;
+  const dy = ty - vy;
+  const d = Math.hypot(dx, dy);
+  if (d <= maxDelta || d === 0) return [tx, ty];
+  return [vx + (dx / d) * maxDelta, vy + (dy / d) * maxDelta];
+}
+
+// Push the circle out of every wall it overlaps and drop the velocity
+// component pointing into the wall.
+function resolveWalls(map, p, r, vels) {
+  for (let pass = 0; pass < 4; pass++) {
+    let hit = false;
+    const x0 = Math.floor(p.x - r), x1 = Math.floor(p.x + r);
+    const y0 = Math.floor(p.y - r), y1 = Math.floor(p.y + r);
+    for (let ty = y0; ty <= y1; ty++) {
+      for (let tx = x0; tx <= x1; tx++) {
+        if (!isSolid(map, tx, ty)) continue;
+        const cx = Math.min(Math.max(p.x, tx), tx + 1);
+        const cy = Math.min(Math.max(p.y, ty), ty + 1);
+        let nx = p.x - cx;
+        let ny = p.y - cy;
+        const d2 = nx * nx + ny * ny;
+        if (d2 >= r * r) continue;
+        let push;
+        if (d2 > 1e-12) {
+          const d = Math.sqrt(d2);
+          nx /= d; ny /= d;
+          push = r - d;
+        } else {
+          // Centre is inside the tile: leave through the nearest face.
+          const faces = [
+            [p.x - tx, -1, 0], [tx + 1 - p.x, 1, 0],
+            [p.y - ty, 0, -1], [ty + 1 - p.y, 0, 1],
+          ].sort((a, b) => a[0] - b[0]);
+          [push, nx, ny] = faces[0];
+          push += r;
+        }
+        p.x += nx * push;
+        p.y += ny * push;
+        for (const v of vels) {
+          const vn = v.vx * nx + v.vy * ny;
+          if (vn < 0) { v.vx -= vn * nx; v.vy -= vn * ny; }
+        }
+        hit = true;
+      }
+    }
+    if (!hit) break;
+  }
+}
+
+// Move by (mv * dt) in sub-steps no longer than half the radius. Wall
+// contacts clip both the move velocity and the player's stored velocity.
+function move(map, p, mv, dt, r) {
+  const dist = Math.hypot(mv.vx, mv.vy) * dt;
+  const n = Math.max(1, Math.ceil(dist / (r * 0.5)));
+  const h = dt / n;
+  for (let i = 0; i < n; i++) {
+    p.x += mv.vx * h;
+    p.y += mv.vy * h;
+    resolveWalls(map, p, r, [mv, p]);
+  }
+}
+
+// input: { x, y } screen-space stick in [-1, 1], dash: true on the step the
+// button went down.
+function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
+  const p = state.player;
+  const r = params.radius;
+  p.px = p.x; p.py = p.y;
+
+  const dir = inputToWorld(input.x || 0, input.y || 0, params.diagonalMode);
+  if (dir.mag > 0) {
+    p.faceX = dir.x / dir.mag;
+    p.faceY = dir.y / dir.mag;
+  }
+
+  p.dashCooldown = Math.max(0, p.dashCooldown - dt);
+  p.dashBuffer = Math.max(0, p.dashBuffer - dt);
+  if (input.dash) p.dashBuffer = params.dashBuffer;
+
+  if (p.dashBuffer > 0 && p.dashCooldown <= 0 && p.dashTime <= 0) {
+    p.dashX = p.faceX; p.dashY = p.faceY;
+    p.dashTime = params.dashDuration;
+    p.dashCooldown = params.dashCooldown;
+    p.dashBuffer = 0;
+  }
+
+  let mvx, mvy;
+  if (p.dashTime > 0) {
+    // Blend the step in which the dash ends, so dash distance does not
+    // depend on how the duration lines up with the step size.
+    const inDash = Math.min(dt, p.dashTime);
+    const speed = (params.dashSpeed * inDash + params.maxSpeed * (dt - inDash)) / dt;
+    mvx = p.dashX * speed;
+    mvy = p.dashY * speed;
+    p.dashTime -= dt;
+    if (p.dashTime <= 0) {
+      p.dashTime = 0;
+      p.vx = p.dashX * params.maxSpeed;
+      p.vy = p.dashY * params.maxSpeed;
+    } else {
+      p.vx = mvx; p.vy = mvy;
+    }
+  } else {
+    const has = dir.mag > 0;
+    [p.vx, p.vy] = approach(
+      p.vx, p.vy,
+      dir.x * params.maxSpeed, dir.y * params.maxSpeed,
+      (has ? params.accel : params.decel) * dt,
+    );
+    mvx = p.vx; mvy = p.vy;
+  }
+
+  move(state.map, p, { vx: mvx, vy: mvy }, dt, r);
+
+  const reach = r + params.pickupRange;
+  for (const s of state.shards) {
+    if (s.taken) continue;
+    if (Math.hypot(s.x - p.x, s.y - p.y) <= reach) {
+      s.taken = true;
+      state.collected++;
+    }
+  }
+
+  if (!state.won) {
+    state.time += dt;
+    if (state.collected === state.shards.length) state.won = true;
+  }
+  state.tick++;
+  return state;
+}
+
+// Smallest gap between the player circle and any wall; negative = overlap.
+function wallClearance(state, r) {
+  const p = state.player;
+  let best = Infinity;
+  const x0 = Math.floor(p.x) - 2, x1 = Math.floor(p.x) + 2;
+  const y0 = Math.floor(p.y) - 2, y1 = Math.floor(p.y) + 2;
+  for (let ty = y0; ty <= y1; ty++) {
+    for (let tx = x0; tx <= x1; tx++) {
+      if (!isSolid(state.map, tx, ty)) continue;
+      const cx = Math.min(Math.max(p.x, tx), tx + 1);
+      const cy = Math.min(Math.max(p.y, ty), ty + 1);
+      const inside = p.x > tx && p.x < tx + 1 && p.y > ty && p.y < ty + 1;
+      const d = inside ? -1 : Math.hypot(p.x - cx, p.y - cy);
+      best = Math.min(best, d - r);
+    }
+  }
+  return best;
+}
+
+// ---- src/levels.js
+// Level legend: '#' wall, '.' floor, 'P' player spawn, '*' shard.
+const LEVELS = [
+  {
+    name: 'Courtyard',
+    map: [
+      '####################',
+      '#........#.........#',
+      '#..*.....#.....*...#',
+      '#........#.........#',
+      '#...##.......##....#',
+      '#...##.......##..*.#',
+      '#..................#',
+      '####..####..####..##',
+      '#..................#',
+      '#.*....#....#......#',
+      '#......#.P..#....*.#',
+      '#......#....#......#',
+      '#..######..######..#',
+      '#..................#',
+      '#....*........#....#',
+      '#.............#..*.#',
+      '###...####....#....#',
+      '#.........#........#',
+      '#...*.....#....*...#',
+      '####################',
+    ],
+  },
+];
+
+// ---- src/render.js
+// Canvas renderer. Reads simulation state, never changes it.
+
+const WALL_H = 34;
+const HW = TILE_W / 2;
+const HH = TILE_H / 2;
+
+function readPalette(el) {
+  const cs = getComputedStyle(el);
+  const v = (n) => cs.getPropertyValue(n).trim();
+  return {
+    sky: v('--night'), sky2: v('--night-2'),
+    floor: v('--sand'), floor2: v('--sand-2'), floorEdge: v('--sand-edge'),
+    wallTop: v('--slate-top'), wallLeft: v('--slate-left'), wallRight: v('--slate-right'),
+    shard: v('--ember'), shardCore: v('--ember-core'),
+    body: v('--hull'), visor: v('--visor'), ink: v('--ink'),
+  };
+}
+
+function createRenderer(canvas) {
+  const ctx = canvas.getContext('2d');
+  const fx = { particles: [], trail: [] };
+  let pal = readPalette(document.documentElement);
+  let w = 0, h = 0, dpr = 1;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = canvas.clientWidth; h = canvas.clientHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+
+  // World (tile units) to canvas pixels, before camera transform.
+  const sx = (x, y) => (x - y) * HW;
+  const sy = (x, y) => (x + y) * HH;
+
+  function diamond(x, y, lift) {
+    ctx.beginPath();
+    ctx.moveTo(sx(x, y), sy(x, y) - lift);
+    ctx.lineTo(sx(x + 1, y), sy(x + 1, y) - lift);
+    ctx.lineTo(sx(x + 1, y + 1), sy(x + 1, y + 1) - lift);
+    ctx.lineTo(sx(x, y + 1), sy(x, y + 1) - lift);
+    ctx.closePath();
+  }
+
+  function quad(ax, ay, bx, by, lift) {
+    ctx.beginPath();
+    ctx.moveTo(sx(ax, ay), sy(ax, ay));
+    ctx.lineTo(sx(bx, by), sy(bx, by));
+    ctx.lineTo(sx(bx, by), sy(bx, by) - lift);
+    ctx.lineTo(sx(ax, ay), sy(ax, ay) - lift);
+    ctx.closePath();
+  }
+
+  function drawWall(map, tx, ty) {
+    // Only the faces pointing at the camera (+x and +y) can be visible.
+    if (!isSolid(map, tx, ty + 1) || ty + 1 >= map.h) {
+      quad(tx, ty + 1, tx + 1, ty + 1, WALL_H);
+      ctx.fillStyle = pal.wallLeft; ctx.fill();
+    }
+    if (!isSolid(map, tx + 1, ty) || tx + 1 >= map.w) {
+      quad(tx + 1, ty, tx + 1, ty + 1, WALL_H);
+      ctx.fillStyle = pal.wallRight; ctx.fill();
+    }
+    diamond(tx, ty, WALL_H);
+    ctx.fillStyle = pal.wallTop; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1; ctx.stroke();
+  }
+
+  function drawShard(s, t) {
+    const x = sx(s.x, s.y), y = sy(s.x, s.y);
+    const bob = 16 + Math.sin(t * 2.4 + s.x * 1.7 + s.y) * 3;
+    const spin = Math.cos(t * 1.8 + s.x);
+    ctx.fillStyle = 'rgba(10,12,24,0.25)';
+    ctx.beginPath(); ctx.ellipse(x, y, 7, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save();
+    ctx.translate(x, y - bob);
+    ctx.shadowColor = pal.shard; ctx.shadowBlur = 14;
+    const gw = 7 * (0.35 + 0.65 * Math.abs(spin));
+    ctx.beginPath();
+    ctx.moveTo(0, -11); ctx.lineTo(gw, 0); ctx.lineTo(0, 11); ctx.lineTo(-gw, 0);
+    ctx.closePath();
+    ctx.fillStyle = pal.shard; ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.moveTo(0, -11); ctx.lineTo(gw * 0.45 * Math.sign(spin || 1), 0); ctx.lineTo(0, 11);
+    ctx.closePath();
+    ctx.fillStyle = pal.shardCore; ctx.fill();
+    ctx.restore();
+  }
+
+  function playerShape(x, y, p, alpha, outlineOnly) {
+    const bodyW = 11, bodyH = 26;
+    const top = y - bodyH;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.moveTo(x - bodyW, y - 6);
+    ctx.lineTo(x - bodyW, top + bodyW);
+    ctx.arc(x, top + bodyW, bodyW, Math.PI, 0);
+    ctx.lineTo(x + bodyW, y - 6);
+    ctx.ellipse(x, y - 6, bodyW, bodyW * 0.5, 0, 0, Math.PI);
+    ctx.closePath();
+    if (outlineOnly) {
+      ctx.strokeStyle = pal.ink; ctx.lineWidth = 1.5; ctx.stroke();
+    } else {
+      ctx.fillStyle = pal.body; ctx.fill();
+      // Visor faces the movement direction, squashed by the projection.
+      const fx2 = sx(p.faceX, p.faceY), fy2 = sy(p.faceX, p.faceY);
+      const fl = Math.hypot(fx2, fy2) || 1;
+      const vx = (fx2 / fl) * bodyW * 0.55;
+      const front = fy2 > -0.2;
+      if (front) {
+        ctx.beginPath();
+        ctx.ellipse(x + vx, top + bodyW + 1, 6.5, 3.6, 0, 0, Math.PI * 2);
+        ctx.fillStyle = pal.visor; ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawPlayer(x, y, p, params) {
+    const r = params.radius * Math.SQRT2;
+    ctx.fillStyle = 'rgba(10,12,24,0.35)';
+    ctx.beginPath(); ctx.ellipse(x, y, r * HW, r * HH, 0, 0, Math.PI * 2); ctx.fill();
+    for (const g of fx.trail) {
+      playerShape(g.x, g.y, p, g.life * 0.35, false);
+    }
+    playerShape(x, y, p, 1, false);
+  }
+
+  function burst(x, y) {
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      fx.particles.push({ x: sx(x, y), y: sy(x, y) - 16, vx: Math.cos(a) * 90, vy: Math.sin(a) * 60 - 40, life: 1 });
+    }
+  }
+
+  function updateFx(dt, p, px, py) {
+    for (const q of fx.particles) {
+      q.x += q.vx * dt; q.y += q.vy * dt; q.vy += 160 * dt; q.life -= dt * 1.8;
+    }
+    fx.particles = fx.particles.filter((q) => q.life > 0);
+    for (const g of fx.trail) g.life -= dt * 4;
+    fx.trail = fx.trail.filter((g) => g.life > 0);
+    if (p.dashTime > 0) fx.trail.push({ x: sx(px, py), y: sy(px, py), life: 1 });
+  }
+
+  function draw(state, view, params, t) {
+    const { map } = state;
+    const p = state.player;
+    const px = p.px + (p.x - p.px) * view.alpha;
+    const py = p.py + (p.y - p.py) * view.alpha;
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    g.addColorStop(0, pal.sky2); g.addColorStop(1, pal.sky);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const z = view.zoom * dpr;
+    ctx.setTransform(z, 0, 0, z, canvas.width / 2 - view.camX * z, canvas.height / 2 - view.camY * z);
+
+    // Ground slab edge, so the level reads as a floating diorama.
+    ctx.fillStyle = pal.floorEdge;
+    ctx.beginPath();
+    ctx.moveTo(sx(0, map.h), sy(0, map.h));
+    ctx.lineTo(sx(map.w, map.h), sy(map.w, map.h));
+    ctx.lineTo(sx(map.w, 0), sy(map.w, 0));
+    ctx.lineTo(sx(map.w, 0), sy(map.w, 0) + 18);
+    ctx.lineTo(sx(map.w, map.h), sy(map.w, map.h) + 18);
+    ctx.lineTo(sx(0, map.h), sy(0, map.h) + 18);
+    ctx.closePath(); ctx.fill();
+
+    for (let ty = 0; ty < map.h; ty++) {
+      for (let tx = 0; tx < map.w; tx++) {
+        if (isSolid(map, tx, ty)) continue;
+        diamond(tx, ty, 0);
+        ctx.fillStyle = (tx + ty) % 2 ? pal.floor : pal.floor2;
+        ctx.fill();
+      }
+    }
+
+    // Painter's order by x + y. Walls use their centre, entities their feet.
+    const items = [];
+    for (let ty = 0; ty < map.h; ty++) {
+      for (let tx = 0; tx < map.w; tx++) {
+        if (isSolid(map, tx, ty)) items.push({ d: tx + ty + 1, k: 0, tx, ty });
+      }
+    }
+    for (const s of state.shards) if (!s.taken) items.push({ d: s.x + s.y, k: 1, s });
+    items.push({ d: px + py, k: 2 });
+    items.sort((a, b) => a.d - b.d || a.k - b.k);
+
+    for (const it of items) {
+      if (it.k === 0) drawWall(map, it.tx, it.ty);
+      else if (it.k === 1) drawShard(it.s, t);
+      else drawPlayer(sx(px, py), sy(px, py), p, params);
+    }
+
+    // Outline on top so the player stays visible behind walls.
+    playerShape(sx(px, py), sy(px, py), p, 0.3, true);
+
+    for (const q of fx.particles) {
+      ctx.globalAlpha = Math.max(0, q.life);
+      ctx.fillStyle = pal.shard;
+      ctx.fillRect(q.x - 2, q.y - 2, 4, 4);
+    }
+    ctx.globalAlpha = 1;
+    return { px, py };
+  }
+
+  return {
+    resize, draw, burst, updateFx,
+    screenOf: (x, y) => ({ x: sx(x, y), y: sy(x, y) }),
+    get size() { return { w, h }; },
+  };
+}
+
+// ---- src/main.js
+// Browser entry: fixed-timestep loop, input, HUD and the tunables panel.
+
+const VIEW_DEFAULTS = { zoom: 1, camLag: 0.12 };
+
+// Slider ranges for every tunable. `group` decides where it shows in the panel.
+const TUNABLES = [
+  { key: 'maxSpeed', label: 'Top speed', unit: 'tiles/s', min: 1, max: 12, step: 0.1, group: 'Movement' },
+  { key: 'accel', label: 'Acceleration', unit: 'tiles/s²', min: 2, max: 120, step: 1, group: 'Movement' },
+  { key: 'decel', label: 'Deceleration', unit: 'tiles/s²', min: 2, max: 120, step: 1, group: 'Movement' },
+  { key: 'radius', label: 'Body radius', unit: 'tiles', min: 0.15, max: 0.45, step: 0.01, group: 'Movement' },
+  { key: 'dashSpeed', label: 'Dash speed', unit: 'tiles/s', min: 4, max: 40, step: 0.5, group: 'Dash' },
+  { key: 'dashDuration', label: 'Dash duration', unit: 's', min: 0.04, max: 0.5, step: 0.01, group: 'Dash' },
+  { key: 'dashCooldown', label: 'Dash cooldown', unit: 's', min: 0, max: 2, step: 0.05, group: 'Dash' },
+  { key: 'dashBuffer', label: 'Input buffer', unit: 's', min: 0, max: 0.3, step: 0.01, group: 'Dash' },
+  { key: 'zoom', label: 'Zoom', unit: '×', min: 0.5, max: 2.5, step: 0.05, group: 'Camera', view: true },
+  { key: 'camLag', label: 'Camera lag', unit: 's', min: 0, max: 0.6, step: 0.01, group: 'Camera', view: true },
+];
+
+const STORE_KEY = 'shardfield.tunables.v1';
+const BEST_KEY = 'shardfield.best.v1';
+
+function load(key) {
+  try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
+}
+function save(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
+}
+
+function start(snapshot) {
+  const stored = snapshot?.tune ?? load(STORE_KEY) ?? {};
+  const params = { ...DEFAULT_PARAMS, ...stored.params };
+  const view = { ...VIEW_DEFAULTS, ...stored.view, camX: 0, camY: 0, alpha: 0 };
+  let best = load(BEST_KEY) ?? {};
+
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('game');
+  const renderer = createRenderer(canvas);
+  let levelIndex = 0;
+  let state = createState(LEVELS[levelIndex]);
+  let collectedSeen = 0;
+  let started = false;
+
+  function centreCamera() {
+    const s = renderer.screenOf(state.player.x, state.player.y);
+    view.camX = s.x; view.camY = s.y - 10;
+  }
+  function restart() {
+    state = createState(LEVELS[levelIndex]);
+    collectedSeen = 0;
+    centreCamera();
+    $('win').hidden = true;
+  }
+
+  // ---- input -------------------------------------------------------------
+  const keys = new Set();
+  let dashQueued = false;
+  const KEYMAP = {
+    ArrowLeft: 'l', KeyA: 'l', ArrowRight: 'r', KeyD: 'r',
+    ArrowUp: 'u', KeyW: 'u', ArrowDown: 'd', KeyS: 'd',
+  };
+  function begin() {
+    if (started) return;
+    started = true;
+    $('intro').hidden = true;
+  }
+  window.addEventListener('keydown', (e) => {
+    if (e.target.closest?.('#panel')) return;
+    if (KEYMAP[e.code]) { keys.add(KEYMAP[e.code]); e.preventDefault(); begin(); }
+    if ((e.code === 'Space' || e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyJ') && !e.repeat) {
+      dashQueued = true; e.preventDefault(); begin();
+    }
+    if (e.code === 'KeyR') { restart(); begin(); }
+    if (e.code === 'KeyT') togglePanel();
+  });
+  window.addEventListener('keyup', (e) => { if (KEYMAP[e.code]) keys.delete(KEYMAP[e.code]); });
+  window.addEventListener('blur', () => keys.clear());
+
+  // Touch: drag anywhere on the left part of the screen for a floating stick.
+  const stick = { id: null, ox: 0, oy: 0, x: 0, y: 0 };
+  const STICK_R = 48;
+  const knob = $('stick');
+  canvas.addEventListener('pointerdown', (e) => {
+    begin();
+    if (e.pointerType === 'mouse' || stick.id !== null) return;
+    stick.id = e.pointerId; stick.ox = e.clientX; stick.oy = e.clientY; stick.x = 0; stick.y = 0;
+    canvas.setPointerCapture(e.pointerId);
+    knob.hidden = false;
+    knob.style.setProperty('--ox', `${e.clientX}px`);
+    knob.style.setProperty('--oy', `${e.clientY}px`);
+    knob.style.setProperty('--kx', '0px');
+    knob.style.setProperty('--ky', '0px');
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== stick.id) return;
+    let dx = e.clientX - stick.ox, dy = e.clientY - stick.oy;
+    const d = Math.hypot(dx, dy);
+    if (d > STICK_R) { dx *= STICK_R / d; dy *= STICK_R / d; }
+    stick.x = dx / STICK_R; stick.y = dy / STICK_R;
+    knob.style.setProperty('--kx', `${dx}px`);
+    knob.style.setProperty('--ky', `${dy}px`);
+  });
+  const endStick = (e) => {
+    if (e.pointerId !== stick.id) return;
+    stick.id = null; stick.x = 0; stick.y = 0; knob.hidden = true;
+  };
+  canvas.addEventListener('pointerup', endStick);
+  canvas.addEventListener('pointercancel', endStick);
+  $('dash-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); dashQueued = true; begin(); });
+  $('intro').addEventListener('pointerdown', begin);
+
+  let padDashWas = false;
+  function readInput() {
+    let x = (keys.has('r') ? 1 : 0) - (keys.has('l') ? 1 : 0);
+    let y = (keys.has('d') ? 1 : 0) - (keys.has('u') ? 1 : 0);
+    if (x || y) { const l = Math.hypot(x, y); x /= l; y /= l; }
+    if (stick.id !== null) {
+      const m = Math.hypot(stick.x, stick.y);
+      if (m > 0.15) { x = stick.x; y = stick.y; }
+    }
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const pad of pads) {
+      if (!pad) continue;
+      const ax = pad.axes[0] || 0, ay = pad.axes[1] || 0;
+      if (Math.hypot(ax, ay) > 0.2) { x = ax; y = ay; begin(); }
+      const pressed = !!(pad.buttons[0]?.pressed || pad.buttons[5]?.pressed);
+      if (pressed && !padDashWas) { dashQueued = true; begin(); }
+      padDashWas = pressed;
+      break;
+    }
+    const dash = dashQueued;
+    dashQueued = false;
+    return { x, y, dash };
+  }
+
+  // ---- tunables panel ----------------------------------------------------
+  const panel = $('panel');
+  const rows = $('tunables');
+  function persist() {
+    save(STORE_KEY, { params, view: { zoom: view.zoom, camLag: view.camLag } });
+  }
+  function valueOf(t) { return t.view ? view[t.key] : params[t.key]; }
+  function fmt(t, v) {
+    const dec = String(t.step).split('.')[1]?.length ?? 0;
+    return Number(v).toFixed(dec);
+  }
+  function buildPanel() {
+    rows.textContent = '';
+    let group = null;
+    for (const t of TUNABLES) {
+      if (t.group !== group) {
+        group = t.group;
+        const h = document.createElement('h3');
+        h.textContent = group;
+        rows.append(h);
+        if (group === 'Movement') rows.append(modeRow());
+      }
+      const id = `t-${t.key}`;
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `<label for="${id}">${t.label}</label><output for="${id}"></output>
+        <input type="range" id="${id}" min="${t.min}" max="${t.max}" step="${t.step}">`;
+      const input = row.querySelector('input');
+      const out = row.querySelector('output');
+      input.value = valueOf(t);
+      out.textContent = `${fmt(t, valueOf(t))} ${t.unit}`;
+      input.addEventListener('input', () => {
+        const v = Number(input.value);
+        if (t.view) view[t.key] = v; else params[t.key] = v;
+        out.textContent = `${fmt(t, v)} ${t.unit}`;
+        persist();
+      });
+      rows.append(row);
+    }
+  }
+  function modeRow() {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label for="t-diag">Diagonals</label><output></output>
+      <select id="t-diag"><option value="screen">Follow the screen</option><option value="grid">Follow the tiles</option></select>`;
+    const sel = row.querySelector('select');
+    sel.value = params.diagonalMode;
+    sel.addEventListener('change', () => { params.diagonalMode = sel.value; persist(); });
+    return row;
+  }
+  function togglePanel(force) {
+    const open = force ?? panel.hidden;
+    panel.hidden = !open;
+    $('tune-btn').setAttribute('aria-expanded', String(open));
+  }
+  $('tune-btn').addEventListener('click', () => togglePanel());
+  $('close-panel').addEventListener('click', () => togglePanel(false));
+  $('reset-tune').addEventListener('click', () => {
+    Object.assign(params, DEFAULT_PARAMS);
+    Object.assign(view, VIEW_DEFAULTS);
+    persist(); buildPanel();
+    flash('Back to the spec defaults');
+  });
+  $('copy-tune').addEventListener('click', () => {
+    const text = JSON.stringify({ params, view: { zoom: view.zoom, camLag: view.camLag } }, null, 2);
+    const out = $('tune-json');
+    out.value = text;
+    out.hidden = false;
+    navigator.clipboard?.writeText(text).then(
+      () => flash('Copied. Paste it into the chat to update the spec.'),
+      () => { out.select(); flash('Select the text below and copy it.'); },
+    ) ?? (out.select(), flash('Select the text below and copy it.'));
+  });
+  let flashTimer = 0;
+  function flash(msg) {
+    const el = $('toast');
+    el.textContent = msg; el.hidden = false;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { el.hidden = true; }, 2600);
+  }
+
+  // ---- HUD ---------------------------------------------------------------
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash');
+  const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
+  function updateHud() {
+    hudShards.textContent = `${state.collected} / ${state.shards.length}`;
+    hudTime.textContent = fmtTime(state.time);
+    const cd = params.dashCooldown > 0 ? 1 - state.player.dashCooldown / params.dashCooldown : 1;
+    hudDash.style.setProperty('--fill', String(cd));
+    hudDash.classList.toggle('ready', state.player.dashCooldown <= 0);
+  }
+  function onWin() {
+    const name = LEVELS[levelIndex].name;
+    const prev = best[name];
+    const isBest = prev == null || state.time < prev;
+    if (isBest) { best = { ...best, [name]: state.time }; save(BEST_KEY, best); }
+    $('win-time').textContent = fmtTime(state.time);
+    $('win-best').textContent = isBest ? 'New best for this level.' : `Best: ${fmtTime(prev)}`;
+    $('win').hidden = false;
+  }
+  $('again').addEventListener('click', () => { restart(); begin(); });
+
+  const WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve'];
+  $('intro-count').textContent = WORDS[state.shards.length] ?? String(state.shards.length);
+
+  // ---- loop --------------------------------------------------------------
+  function resize() { renderer.resize(); }
+  window.addEventListener('resize', resize);
+  resize();
+  buildPanel();
+  centreCamera();
+
+  let last = performance.now();
+  let acc = 0;
+  let clock = 0;
+  function frame(now) {
+    const dt = Math.min(0.25, (now - last) / 1000);
+    last = now;
+    clock += dt;
+    if (started) {
+      acc += dt;
+      let input = readInput();
+      while (acc >= STEP) {
+        const wasWon = state.won;
+        step(state, input, params);
+        input = { ...input, dash: false }; // a press counts once
+        acc -= STEP;
+        if (!wasWon && state.won) onWin();
+      }
+    }
+    view.alpha = started ? acc / STEP : 1;
+    const p = state.player;
+    const ix = p.px + (p.x - p.px) * view.alpha, iy = p.py + (p.y - p.py) * view.alpha;
+    while (collectedSeen < state.collected) {
+      const s = state.shards.find((q) => q.taken && !q.burst);
+      if (s) { s.burst = true; renderer.burst(s.x, s.y); }
+      collectedSeen++;
+    }
+    renderer.updateFx(dt, p, ix, iy);
+    // Camera eases toward the player; lag is the time constant in seconds.
+    const target = renderer.screenOf(ix, iy);
+    const k = view.camLag > 0 ? 1 - Math.exp(-dt / view.camLag) : 1;
+    view.camX += (target.x - view.camX) * k;
+    view.camY += (target.y - 10 - view.camY) * k;
+    const fit = Math.min(renderer.size.w, renderer.size.h) / 560;
+    renderer.draw(state, { ...view, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, params, clock);
+    updateHud();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  window.claude?.hot?.snapshot?.(() => ({ tune: { params, view: { zoom: view.zoom, camLag: view.camLag } } }));
+}
+
+const hot = window.claude?.hot;
+if (hot?.ready) hot.ready(start); else start(hot?.data ?? {});
+
+})();
+</script>
