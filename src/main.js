@@ -2,7 +2,7 @@
 import { createState, step, STEP, DEFAULT_PARAMS, isSolid, groundLevel } from './sim.js';
 import { createRenderer, LOOK_DEFAULTS } from './render.js';
 import { LEVELS } from './levels.js';
-import { createRig, updateRig, setRigMotion, RIG_DEFAULTS, SPIDER_RIG } from './bug.js';
+import { createRig, updateRig, setRigMotion, landRig, RIG_DEFAULTS, SPIDER_RIG, STAINER_RIG } from './bug.js';
 import { stepResponse } from './dynamics.js';
 import { createVitals } from './vitals.js';
 import { CHARACTERS, characterById } from './characters.js';
@@ -58,6 +58,9 @@ function start(snapshot) {
   const rigOpts = { ...charRig(character), ...(stored.rigFor === character.id ? stored.rig : {}) };
   // What the simulation runs with: tunables plus the bug's own mechanics.
   const simParams = () => ({ ...params, ...character.params });
+  // Panel values start from the chosen bug's own stats.
+  const loadStats = () => Object.assign(params, DEFAULT_PARAMS, stored.params, character.params);
+  loadStats();
   const look = { ...LOOK_DEFAULTS, ...stored.look };
   let best = load(BEST_KEY) ?? {};
 
@@ -87,7 +90,11 @@ function start(snapshot) {
     const ids = new Set();
     for (const c of state.critters) {
       ids.add(c.id);
-      if (!rigs.critters.has(c.id)) rigs.critters.set(c.id, createRig(c.x, c.y, Math.atan2(c.dirY, c.dirX) || c.id * 1.3, SPIDER_RIG));
+      if (!rigs.critters.has(c.id)) {
+        const rig = createRig(c.x, c.y, Math.atan2(c.dirY, c.dirX) || c.id * 1.3, c.type === 'spider' ? SPIDER_RIG : STAINER_RIG);
+        rig.zLevel = c.z;
+        rigs.critters.set(c.id, rig);
+      }
     }
     for (const id of rigs.critters.keys()) if (!ids.has(id)) rigs.critters.delete(id);
   }
@@ -127,11 +134,31 @@ function start(snapshot) {
     const card = document.createElement('button');
     card.type = 'button'; card.className = 'char'; card.dataset.id = ch.id;
     card.innerHTML = `<canvas width="120" height="76" aria-hidden="true"></canvas>
-      <span class="cname"></span><span class="clatin"></span><span class="cpreset"></span><span class="cblurb"></span>`;
+      <span class="cname"></span><span class="clatin"></span><span class="cpreset"></span><span class="cblurb"></span>
+      <span class="cstats"></span><span class="cspecial"></span>`;
     card.querySelector('.cname').textContent = ch.name;
     card.querySelector('.clatin').textContent = ch.latin;
     card.querySelector('.cpreset').textContent = `Motion: ${ch.preset}`;
     card.querySelector('.cblurb').textContent = ch.blurb;
+    card.querySelector('.cspecial').textContent = ch.special;
+    // Stat bars, scaled to the best value among all bugs.
+    const st = { ...DEFAULT_PARAMS, ...ch.params };
+    const all = CHARACTERS.map((c) => ({ ...DEFAULT_PARAMS, ...c.params }));
+    const rows = [
+      ['Speed', st.maxSpeed, Math.max(...all.map((a) => a.maxSpeed))],
+      ['Health', st.maxHealth, Math.max(...all.map((a) => a.maxHealth))],
+      ['Dash', st.dashSpeed * st.dashDuration, Math.max(...all.map((a) => a.dashSpeed * a.dashDuration))],
+    ];
+    const stats = card.querySelector('.cstats');
+    for (const [label, v, max] of rows) {
+      const row = document.createElement('span');
+      row.className = 'stat-row';
+      row.innerHTML = '<span class="sl"></span><span class="bar"><i></i></span><span class="sv"></span>';
+      row.querySelector('.sl').textContent = label;
+      row.querySelector('i').style.width = `${Math.round((v / max) * 100)}%`;
+      row.querySelector('.sv').textContent = label === 'Dash' ? `${v.toFixed(1)} t` : label === 'Speed' ? `${v}` : `${v}`;
+      stats.append(row);
+    }
     card.addEventListener('click', () => chooseCharacter(ch.id));
     grid.append(card);
     const rig = createRig(0, 0, 0, charRig(ch));
@@ -156,7 +183,10 @@ function start(snapshot) {
     const changed = id !== character.id;
     character = characterById(id);
     save(CHAR_KEY, character.id);
-    if (changed) { Object.keys(rigOpts).forEach((k) => delete rigOpts[k]); Object.assign(rigOpts, charRig(character)); persist(); buildPanel(); }
+    if (changed) {
+      Object.keys(rigOpts).forEach((k) => delete rigOpts[k]); Object.assign(rigOpts, charRig(character));
+      stored.params = {}; loadStats(); persist(); buildPanel();
+    }
     markChosen();
     closeMenu();
     restart();
@@ -445,6 +475,17 @@ function start(snapshot) {
       if (e.type === 'pickup') { if (e.big) renderer.bigBurst(e.x, e.y); else renderer.burst(e.x, e.y); }
       else if (e.type === 'kill') { renderer.splat(e.x, e.y); renderer.bloodSplatter(state.map, e.x, e.y, e.dirX, e.dirY); }
       else if (e.type === 'hit') { renderer.hitFx(ix, iy); shake = 0.25; vitalsFlash = 0.2; }
+      else if (e.type === 'land') {
+        renderer.dust(e.x, e.y, groundLevel(state.map, e.x, e.y), e.height);
+        const rig = e.who === 'player' ? rigs.player : rigs.critters.get(e.who);
+        if (rig) landRig(rig, e.height);
+        if (e.who === 'player' && e.height >= 1.5) shake = Math.max(shake, 0.15);
+      }
+      else if (e.type === 'cocoon') renderer.cocoonBurst(e.x, e.y, groundLevel(state.map, e.x, e.y));
+      else if (e.type === 'shoot') renderer.muzzle(e.x, e.y, groundLevel(state.map, e.x, e.y));
+      else if (e.type === 'webSplat') renderer.webSplat(e.x, e.y, e.z);
+      else if (e.type === 'webTorn') renderer.webTorn();
+      else if (e.type === 'webbed') shake = Math.max(shake, 0.08);
       else if (e.type === 'spawn') renderer.ventPuff({ x: e.x, y: e.y });
       else if (e.type === 'corpse') renderer.bakeHusk(state.map, e.x, e.y);
       else if (e.type === 'win') onWin();
@@ -495,20 +536,24 @@ function start(snapshot) {
       bodyF: rigOpts.bodyF * (1 + 0.8 * p.heat),
       bodyZeta: rigOpts.bodyZeta * (1 - 0.6 * p.heat),
     });
-    updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy }, footBlocked(rigs.player));
+    // Heights come from the simulation, interpolated like positions.
+    const lerpZ = (e) => (e.pz ?? e.z) + (e.z - (e.pz ?? e.z)) * view.alpha;
+    rigs.player.zLevel = lerpZ(p);
+    updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy, air: p.air }, footBlocked(rigs.player));
     for (const c of state.critters) {
+      const rig = rigs.critters.get(c.id);
+      rig.zLevel = lerpZ(c);
       if (!c.alive) continue; // corpses stay where they fell
       const cx = c.px + (c.x - c.px) * view.alpha, cy = c.py + (c.y - c.py) * view.alpha;
-      const rig = rigs.critters.get(c.id);
-      updateRig(rig, adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, footBlocked(rig));
+      updateRig(rig, adt, { x: cx, y: cy, vx: c.vx, vy: c.vy, air: c.air }, footBlocked(rig));
     }
     vitalsFlash = Math.max(0, vitalsFlash - dt);
     vitals.draw({
       health: p.health, maxHealth: params.maxHealth, charges: p.charges, maxCharges: params.maxCharges,
       bpm: 60 + p.heat * 120, overheated: p.overheated, flash: vitalsFlash, t: clock,
     });
-    // Camera eases toward the player; lag is the time constant in seconds.
-    const target = renderer.screenOf(ix, iy);
+    // Camera eases toward the player (at its real height, also mid-fall).
+    const target = renderer.screenOf(ix, iy, rigs.player.zLevel);
     const k = view.camLag > 0 ? 1 - Math.exp(-dt / view.camLag) : 1;
     view.camX += (target.x - view.camX) * k;
     view.camY += (target.y - 10 - view.camY) * k;

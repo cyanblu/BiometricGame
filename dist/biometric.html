@@ -50,7 +50,7 @@ body {
   position: fixed; left: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
   display: grid; gap: 2px; pointer-events: none;
 }
-#vitals { width: calc(168px * var(--vs)); height: calc(52px * var(--vs)); image-rendering: pixelated; display: block; }
+#vitals { --vw: 168; width: calc(var(--vw) * 1px * var(--vs)); height: calc(52px * var(--vs)); image-rendering: pixelated; display: block; }
 .vitals-cap { display: flex; justify-content: space-between; padding-inline: calc(36px * var(--vs)) 8px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 #cap-hp { color: #b8262a; }
 #cap-ch { color: var(--ember); }
@@ -94,6 +94,12 @@ body {
 .clatin { color: var(--muted); font-size: 11px; font-style: italic; }
 .cpreset { color: var(--ember); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
 .cblurb { color: var(--ink); }
+.cspecial { color: var(--visor); font-size: 11px; }
+.cstats { display: grid; gap: 3px; margin-top: 4px; }
+.stat-row { display: grid; grid-template-columns: 48px 1fr 40px; gap: 6px; align-items: center; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.stat-row .bar { height: 6px; background: var(--line); position: relative; }
+.stat-row .bar i { position: absolute; inset: 0 auto 0 0; background: var(--ember); }
+.stat-row .sv { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
 #chars .hint { margin: 0; color: var(--muted); font-size: 12px; text-align: center; }
 #chars kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
 
@@ -179,7 +185,7 @@ body {
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Biometric<small>Prototype 0.7 · Pump Yard</small></div>
+  <div class="brand">Biometric<small>Prototype 0.8 · Pump Yard</small></div>
   <div class="stats">
     <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Cells</span></div>
     <div class="stat"><b id="hud-kills">0</b><span>Kills</span></div>
@@ -203,7 +209,7 @@ body {
   <header>
     <h1>Biometric</h1>
     <p>Choose your bug. Each one moves with its own personality; the dung beetle plays by its own rules.
-    Collect every battery in the pump yard. Dashes cost charge, spiders hunt in pairs, ten hits and you are done.</p>
+    Collect every battery in the pump yard. Dashes cost charge. Cotton stainers hunt in pairs; cocoons shoot webs, and break open into spiders.</p>
   </header>
   <div id="char-grid"></div>
   <p class="hint">Click a bug, or use the arrow keys and Enter. In game: <kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>C</kbd> change bug · <kbd>T</kbd> tune</p>
@@ -275,6 +281,30 @@ const DEFAULT_PARAMS = {
   emergeTime: 0.6,
   spawnCooldown: 1.5, // attack cooldown of a freshly spawned spider
   corpseTime: 12,
+  // Falling: entities can step off ledges (never climb them).
+  gravity: 30, // levels/s²
+  airControl: 0.35, // share of acceleration available in the air
+  fallStunHeight: 1.5, // landing from this many levels or more stuns
+  fallStun: 0.25, // s
+  // Cocoons with web turrets, and the spiders inside them.
+  cocoonRadius: 0.32,
+  turretRange: 7, // tiles
+  turretTurn: 3, // rad/s
+  turretCharge: 0.45, // s of visible wind-up before a shot
+  turretReload: 2.6, // s between shots (x 0.8..1.2)
+  webSpeed: 6.5, // tiles/s
+  webRadius: 0.18,
+  webRange: 9, // tiles before a web drops
+  webDuration: 2.5, // s of slowdown
+  webSlow: 0.45, // speed and acceleration multiplier while webbed
+  spiderDrop: 1.4, // levels above the cocoon a spider falls from
+  spiderSpeed: 2.6,
+  spiderAggro: 8,
+  spiderLungeRange: 1.6,
+  spiderWindup: 0.3,
+  spiderLungeSpeed: 7.5,
+  spiderLungeTime: 0.28,
+  spiderCooldown: 1.6,
   // Movement mechanics: 'normal', or 'ball' (dung beetle pushing a ball).
   mech: 'normal',
   ballRadius: 0.32,
@@ -335,6 +365,7 @@ function parseLevel(def) {
   const shards = [];
   const critters = [];
   const vents = [];
+  const cocoons = [];
   let spawn = { x: w / 2, y: h / 2 };
   for (let ty = 0; ty < h; ty++) {
     for (let tx = 0; tx < w; tx++) {
@@ -344,6 +375,7 @@ function parseLevel(def) {
       else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5, big: false });
       else if (c === 'B') shards.push({ x: tx + 0.5, y: ty + 0.5, big: true });
       else if (c === 'V') vents.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === 'O') cocoons.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'b' || c === 's') critters.push({ x: tx + 0.5, y: ty + 0.5 });
       const hc = (hrows[ty] ?? '')[tx] ?? '0';
       const i = ty * w + tx;
@@ -358,7 +390,7 @@ function parseLevel(def) {
     const lx = tx - sdx[i], ly = ty - sdy[i];
     level[i] = lx >= 0 && ly >= 0 && lx < w && ly < h ? level[ly * w + lx] : 0;
   }
-  return { name: def.name, w, h, solid, level, kind, sdx, sdy, shards, critters, vents, spawn };
+  return { name: def.name, w, h, solid, level, kind, sdx, sdy, shards, critters, vents, cocoons, spawn };
 }
 
 function isSolid(map, tx, ty) {
@@ -386,12 +418,54 @@ function groundLevel(map, x, y) {
   return tileLevelAt(map, Math.floor(x), Math.floor(y), x, y);
 }
 
-// Can something standing on tile (ox, oy) touch tile (tx, ty) at point (cx, cy)?
-// Walls never; otherwise both surfaces must be at the same height there.
-function blocks(map, ox, oy, tx, ty, cx, cy) {
+// Largest drop (levels) that still counts as walking, e.g. down a ramp.
+const STEP_DOWN = 0.15;
+
+// Does tile (tx, ty) block entity e (with x, y, z, air) at contact point
+// (cx, cy)? Walls always do. Other tiles only when their surface there is
+// higher than the entity: you can step off a ledge, never walk up a cliff.
+// On the ground the comparison uses the entity's own tile at the contact
+// point, which is what lets a body leave the top of a ramp; in the air (or
+// already past the edge) it uses the entity's height.
+function blocks(map, e, tx, ty, cx, cy) {
   if (isSolid(map, tx, ty)) return true;
+  const ox = Math.floor(e.x), oy = Math.floor(e.y);
   if (tx === ox && ty === oy) return false;
-  return Math.abs(tileLevelAt(map, tx, ty, cx, cy) - tileLevelAt(map, ox, oy, cx, cy)) > LEVEL_TOL;
+  const airborne = e.air || tileLevelAt(map, ox, oy, e.x, e.y) < e.z - STEP_DOWN;
+  const here = airborne ? e.z : tileLevelAt(map, ox, oy, cx, cy);
+  return tileLevelAt(map, tx, ty, cx, cy) > here + LEVEL_TOL;
+}
+
+// Can you get from tile a to its 4-neighbour b (on foot or by dropping)?
+function canPass(map, ax, ay, bx, by) {
+  if (isSolid(map, ax, ay) || isSolid(map, bx, by)) return false;
+  const ex = bx > ax ? bx : bx < ax ? ax : null, ey = by > ay ? by : by < ay ? ay : null;
+  for (const t of [0.05, 0.5, 0.95]) {
+    const x = ex ?? ax + t, y = ey ?? ay + t;
+    if (tileLevelAt(map, bx, by, x, y) > tileLevelAt(map, ax, ay, x, y) + LEVEL_TOL) return false;
+  }
+  return true;
+}
+
+// Vertical motion after a horizontal move: follow the ground on slopes and
+// small steps, otherwise fall. Returns the height fallen when it lands.
+function settle(map, e, dt, params, r) {
+  const ground = groundLevel(map, e.x, e.y);
+  e.pz ??= e.z;
+  if (!e.air) {
+    if (ground >= e.z - STEP_DOWN) { e.z = ground; return 0; }
+    e.air = true; e.vz = 0; e.fallFrom = e.z;
+  }
+  e.vz -= params.gravity * dt;
+  e.z += e.vz * dt;
+  let fell = 0;
+  if (e.z <= ground) {
+    fell = Math.max(e.fallFrom - ground, 1e-6);
+    e.z = ground; e.vz = 0; e.air = false;
+  }
+  // Having dropped, a cliff face it was beside may now be above it: slide off it.
+  resolveWalls(map, e, r, [e]);
+  return fell;
 }
 
 // Open edge between 4-neighbours a and b (used for reachability checks).
@@ -410,8 +484,9 @@ function edgeOpen(map, ax, ay, bx, by) {
 function makeSpider(state, x, y, extra = {}) {
   const c = {
     id: state.nextId++,
-    x, y, z: groundLevel(state.map, x, y), px: x, py: y, vx: 0, vy: 0,
+    x, y, z: groundLevel(state.map, x, y), pz: 0, vz: 0, air: false, px: x, py: y, vx: 0, vy: 0,
     dirX: 0, dirY: 0, timer: 0, fleeing: false,
+    type: 'stainer', // 'stainer' (cotton stainer, hunts in pairs) or 'spider' (from cocoons, hunts alone)
     alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
     lungeX: 0, lungeY: 0, stateTime: 0, stateTotal: 0, deadTime: 0,
     ...extra,
@@ -432,7 +507,7 @@ function createState(level, seed = 1, params = DEFAULT_PARAMS) {
     hits: 0,
     map,
     player: {
-      x: map.spawn.x, y: map.spawn.y, z: groundLevel(map, map.spawn.x, map.spawn.y),
+      x: map.spawn.x, y: map.spawn.y, z: groundLevel(map, map.spawn.x, map.spawn.y), vz: 0, air: false,
       px: map.spawn.x, py: map.spawn.y, // position before the last step, for render interpolation
       vx: 0, vy: 0,
       faceX: Math.SQRT1_2, faceY: Math.SQRT1_2,
@@ -443,6 +518,7 @@ function createState(level, seed = 1, params = DEFAULT_PARAMS) {
       charges: params.startCharges, // each dash spends one
       health: params.maxHealth,
       stun: 0, invuln: 0,
+      webbed: 0, // s of web slowdown left
     },
     shards: map.shards.map((s) => ({ x: s.x, y: s.y, big: s.big, taken: false })),
     collected: 0,
@@ -454,10 +530,15 @@ function createState(level, seed = 1, params = DEFAULT_PARAMS) {
   map.critters.forEach((c, i) => makeSpider(state, c.x, c.y, { timer: 0.3 * i }));
   if (params.mech === 'ball') {
     const p = state.player, gap = params.radius + params.ballRadius;
-    p.ball = { x: p.x + p.faceX * gap, y: p.y + p.faceY * gap, vx: 0, vy: 0, z: 0 };
+    p.ball = { x: p.x + p.faceX * gap, y: p.y + p.faceY * gap, vx: 0, vy: 0, z: p.z, vz: 0, air: false };
     move(map, p.ball, { vx: 0, vy: 0 }, 0, params.ballRadius);
     separate(map, p, p.ball, gap, params);
   }
+  state.cocoons = map.cocoons.map((c) => ({
+    id: state.nextId++, x: c.x, y: c.y, z: groundLevel(map, c.x, c.y), alive: true,
+    aim: rand(state) * Math.PI * 2, reload: 1 + rand(state) * 2, charge: 0, sees: false,
+  }));
+  state.webs = [];
   state.vents = map.vents.map((v) => ({
     x: v.x, y: v.y,
     timer: params.ventFirstMin + rand(state) * (params.ventFirstMax - params.ventFirstMin),
@@ -499,14 +580,13 @@ function approach(vx, vy, tx, ty, maxDelta) {
 function resolveWalls(map, p, r, vels) {
   for (let pass = 0; pass < 4; pass++) {
     let hit = false;
-    const ox = Math.floor(p.x), oy = Math.floor(p.y); // the tile it stands on
     const x0 = Math.floor(p.x - r), x1 = Math.floor(p.x + r);
     const y0 = Math.floor(p.y - r), y1 = Math.floor(p.y + r);
     for (let ty = y0; ty <= y1; ty++) {
       for (let tx = x0; tx <= x1; tx++) {
         const cx = Math.min(Math.max(p.x, tx), tx + 1);
         const cy = Math.min(Math.max(p.y, ty), ty + 1);
-        if (!blocks(map, ox, oy, tx, ty, cx, cy)) continue;
+        if (!blocks(map, p, tx, ty, cx, cy)) continue;
         let nx = p.x - cx;
         let ny = p.y - cy;
         const d2 = nx * nx + ny * ny;
@@ -549,7 +629,6 @@ function move(map, p, mv, dt, r) {
     p.y += mv.vy * h;
     resolveWalls(map, p, r, [mv, p]);
   }
-  p.z = groundLevel(map, p.x, p.y);
 }
 
 const SAME_FLOOR = 0.5; // vertical reach for pickups, hits and kills (levels)
@@ -561,14 +640,19 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   if (state.dead) {
     // Frozen: keep interpolation still, change nothing else.
     p.px = p.x; p.py = p.y;
-    for (const c of state.critters) { c.px = c.x; c.py = c.y; }
+    p.pz = p.z;
+    for (const c of state.critters) { c.px = c.x; c.py = c.y; c.pz = c.z; }
     return state;
   }
   const r = params.radius;
-  p.px = p.x; p.py = p.y;
+  p.px = p.x; p.py = p.y; p.pz = p.z;
 
   p.stun = Math.max(0, p.stun - dt);
   p.invuln = Math.max(0, p.invuln - dt);
+  if (p.webbed > 0) {
+    p.webbed = Math.max(0, p.webbed - dt);
+    if (p.webbed === 0) state.events.push({ type: 'webFree' });
+  }
   const stunned = p.stun > 0;
   const dir = stunned ? { x: 0, y: 0, mag: 0 } : inputToWorld(input.x || 0, input.y || 0, params.diagonalMode);
   if (dir.mag > 0) {
@@ -587,13 +671,15 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     p.dashTime = params.mech === 'ball' && kickBall(state, params) ? 0 : params.dashDuration;
     p.dashCooldown = params.dashCooldown;
     p.dashBuffer = 0;
+    if (p.webbed > 0) { p.webbed = 0; state.events.push({ type: 'webTorn' }); } // a dash tears the web
     p.heat = Math.min(1, p.heat + params.dashHeat);
     if (p.heat >= 1) p.overheated = true;
   } else {
     p.heat = Math.max(0, p.heat - params.heatCool * dt);
     if (p.overheated && p.heat <= params.overheatRecover) p.overheated = false;
   }
-  const topSpeed = params.maxSpeed * (p.overheated ? params.overheatSpeed : 1);
+  const slow = p.webbed > 0 ? params.webSlow : 1;
+  const topSpeed = params.maxSpeed * (p.overheated ? params.overheatSpeed : 1) * slow;
 
   let mvx, mvy;
   const dashing = p.dashTime > 0;
@@ -617,16 +703,34 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     }
   } else {
     const has = dir.mag > 0;
+    const grip = p.air ? params.airControl : 1; // little steering in the air
     [p.vx, p.vy] = approach(
       p.vx, p.vy,
       dir.x * topSpeed, dir.y * topSpeed,
-      (has ? params.accel : params.decel) * dt,
+      (has ? params.accel * slow : params.decel) * grip * dt,
     );
     mvx = p.vx; mvy = p.vy;
   }
 
   move(state.map, p, { vx: mvx, vy: mvy }, dt, r);
   if (p.ball) separate(state.map, p, p.ball, r + params.ballRadius, params);
+  if (!dashing) {
+    for (const c of state.cocoons) {
+      if (!c.alive || Math.abs(c.z - p.z) >= SAME_FLOOR) continue;
+      const dx = p.x - c.x, dy = p.y - c.y, d = Math.hypot(dx, dy), min = r + params.cocoonRadius;
+      if (d < min && d > 1e-9) {
+        p.x += (dx / d) * (min - d); p.y += (dy / d) * (min - d);
+        const vn = (p.vx * dx + p.vy * dy) / d;
+        if (vn < 0) { p.vx -= (vn * dx) / d; p.vy -= (vn * dy) / d; }
+        move(state.map, p, { vx: 0, vy: 0 }, 0, r);
+      }
+    }
+  }
+  const fell = settle(state.map, p, dt, params, r);
+  if (fell >= 0.5) {
+    state.events.push({ type: 'land', who: 'player', x: p.x, y: p.y, height: fell });
+    if (fell >= params.fallStunHeight) p.stun = Math.max(p.stun, params.fallStun);
+  }
 
   const reach = r + params.pickupRange;
   for (const s of state.shards) {
@@ -642,6 +746,8 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   }
 
   stepVents(state, params, dt);
+  stepCocoons(state, params, dt, dashing);
+  stepWebs(state, params, dt, dashing);
   stepSpiders(state, params, dt, dashing);
 
   if (!state.won && !state.dead) {
@@ -659,7 +765,7 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 // A spider that is free to pair up for an attack.
-const canPair = (c) => c.alive && c.mode === 'wander' && c.cooldown <= 0;
+const canPair = (c) => c.alive && c.type === 'stainer' && c.mode === 'wander' && c.cooldown <= 0;
 
 function nearestPartner(state, c, range) {
   let best = null, bestD = range;
@@ -694,6 +800,88 @@ function killSpider(state, c, dirX = state.player.dashX, dirY = state.player.das
   c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0; c.deadTime = 0;
   state.kills++;
   state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX, dirY });
+}
+
+// ---- cocoons, web turrets, webs -------------------------------------------------
+
+// Clear line between two points at height z: no wall, no ground higher than
+// z + half a level in between (sampled every quarter tile).
+function lineOfSight(map, ax, ay, bx, by, z) {
+  const d = Math.hypot(bx - ax, by - ay), n = Math.max(1, Math.ceil(d / 0.25));
+  for (let i = 1; i < n; i++) {
+    const x = ax + ((bx - ax) * i) / n, y = ay + ((by - ay) * i) / n;
+    if (isSolid(map, Math.floor(x), Math.floor(y)) || groundLevel(map, x, y) > z + 0.5) return false;
+  }
+  return true;
+}
+
+// Each cocoon carries a turret: it turns toward the player while it can see
+// them, charges for a moment once lined up, and fires a web.
+function stepCocoons(state, params, dt, dashing) {
+  const p = state.player;
+  for (const c of state.cocoons) {
+    if (!c.alive) continue;
+    // Broken by a dash, or by a fast ball.
+    const ball = p.ball, bs = ball ? Math.hypot(ball.vx, ball.vy) : 0;
+    const byDash = dashing && Math.abs(c.z - p.z) < SAME_FLOOR && dist(c, p) < params.radius + params.cocoonRadius + params.killMargin;
+    const byBall = ball && bs >= params.ballKillSpeed && Math.abs(c.z - ball.z) < SAME_FLOOR && dist(c, ball) < params.ballRadius + params.cocoonRadius;
+    if (byDash || byBall) {
+      c.alive = false;
+      state.events.push({ type: 'cocoon', id: c.id, x: c.x, y: c.y });
+      // The spider inside drops out from above and lands on its own.
+      const top = c.z + params.spiderDrop;
+      const sp = makeSpider(state, c.x, c.y, {
+        type: 'spider', mode: 'drop', z: top, air: true, vz: 0, fallFrom: top, cooldown: 0.6,
+      });
+      state.events.push({ type: 'spiderDrop', id: sp.id, x: c.x, y: c.y });
+      continue;
+    }
+    c.reload = Math.max(0, c.reload - dt);
+    const dx = p.x - c.x, dy = p.y - c.y, d = Math.hypot(dx, dy);
+    const muzzle = c.z + 0.5;
+    c.sees = !state.dead && d <= params.turretRange && Math.abs(p.z - c.z) < 1.5
+      && lineOfSight(state.map, c.x, c.y, p.x, p.y, Math.max(c.z, p.z));
+    if (!c.sees) { c.charge = 0; continue; }
+    const want = Math.atan2(dy, dx);
+    let diff = Math.atan2(Math.sin(want - c.aim), Math.cos(want - c.aim));
+    const turn = Math.sign(diff) * Math.min(Math.abs(diff), params.turretTurn * dt);
+    c.aim += turn; diff -= turn;
+    if (c.reload > 0 || Math.abs(diff) > 0.2) { c.charge = 0; continue; }
+    c.charge += dt;
+    if (c.charge < params.turretCharge) continue;
+    const ux = Math.cos(c.aim), uy = Math.sin(c.aim);
+    state.webs.push({
+      id: state.nextId++, from: c.id, x: c.x + ux * 0.4, y: c.y + uy * 0.4, z: muzzle,
+      vx: ux * params.webSpeed, vy: uy * params.webSpeed, travel: 0, px: c.x, py: c.y,
+    });
+    state.events.push({ type: 'shoot', id: c.id, x: c.x, y: c.y });
+    c.charge = 0;
+    c.reload = params.turretReload * (0.8 + rand(state) * 0.4);
+  }
+}
+
+// Webs fly straight; they stick to walls and higher ground, drop after their
+// range, and wrap the player on contact (not during a dash).
+function stepWebs(state, params, dt, dashing) {
+  const p = state.player;
+  state.webs = state.webs.filter((w) => {
+    w.px = w.x; w.py = w.y;
+    w.x += w.vx * dt; w.y += w.vy * dt;
+    w.travel += Math.hypot(w.vx, w.vy) * dt;
+    const tx = Math.floor(w.x), ty = Math.floor(w.y);
+    if (isSolid(state.map, tx, ty) || groundLevel(state.map, w.x, w.y) > w.z) {
+      state.events.push({ type: 'webSplat', x: w.x, y: w.y, z: w.z });
+      return false;
+    }
+    if (w.travel > params.webRange) return false;
+    if (!dashing && !state.dead && Math.abs(p.z + 0.4 - w.z) < 0.9
+      && Math.hypot(w.x - p.x, w.y - p.y) < params.radius + params.webRadius) {
+      p.webbed = params.webDuration;
+      state.events.push({ type: 'webbed', x: p.x, y: p.y });
+      return false;
+    }
+    return true;
+  });
 }
 
 // ---- dung beetle: a ball with momentum ---------------------------------------
@@ -748,15 +936,19 @@ function stepBall(state, dir, params, dt, topSpeed) {
     const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy) || 1;
     const align = (dx / d) * (dir.x / dir.mag) + (dy / d) * (dir.y / dir.mag);
     if (align > 0.6) {
-      b.vx += (dx / d) * params.ballPush * dir.mag * dt;
-      b.vy += (dy / d) * params.ballPush * dir.mag * dt;
-      const s2 = Math.hypot(b.vx, b.vy), cap = params.ballMax * (p.overheated ? params.overheatSpeed : 1);
+      const slow = p.webbed > 0 ? params.webSlow : 1;
+      b.vx += (dx / d) * params.ballPush * slow * dir.mag * dt;
+      b.vy += (dy / d) * params.ballPush * slow * dir.mag * dt;
+      const s2 = Math.hypot(b.vx, b.vy), cap = params.ballMax * (p.overheated ? params.overheatSpeed : 1) * slow;
       if (s2 > cap) { b.vx *= cap / s2; b.vy *= cap / s2; }
     }
   }
   // Roll; a wall contact reflects the blocked part of the velocity.
+  b.pz = b.z;
   const before = { vx: b.vx, vy: b.vy };
   move(map, b, b, dt, params.ballRadius);
+  const ballFell = settle(map, b, dt, params, params.ballRadius);
+  if (ballFell >= 0.5) state.events.push({ type: 'land', who: 'ball', x: b.x, y: b.y, height: ballFell });
   b.vx -= params.ballBounce * (before.vx - b.vx);
   b.vy -= params.ballBounce * (before.vy - b.vy);
   // The beetle heads for the spot behind the ball.
@@ -783,7 +975,7 @@ function stepVents(state, params, dt) {
   for (const v of state.vents) {
     v.timer -= dt;
     if (v.timer > 0) continue;
-    const alive = state.critters.filter((c) => c.alive).length;
+    const alive = state.critters.filter((c) => c.alive && c.type === 'stainer').length;
     if (alive >= params.maxSpiders || dist(v, p) < params.ventSafe) { v.timer = 1; continue; }
     const c = makeSpider(state, v.x, v.y, {
       mode: 'emerge', stateTime: params.emergeTime, stateTotal: params.emergeTime,
@@ -795,7 +987,48 @@ function stepVents(state, params, dt) {
   }
 }
 
-// Spiders: alone they wander, flee, or walk to a partner. Two free spiders
+// Spider from a cocoon: drops, then hunts alone. Stalks toward the player,
+// winds up briefly when close, lunges, recovers. Returns the wanted velocity.
+function spiderBrain(state, c, params, dt, dx, dy, d) {
+  const p = state.player;
+  const sameFloor = Math.abs(c.z - p.z) < SAME_FLOOR;
+  if (c.mode === 'drop') {
+    if (!c.air) { c.mode = 'stalk'; c.timer = 0; }
+    return [c.vx, c.vy, 0];
+  }
+  if (c.mode === 'swindup') {
+    c.dirX = -dx / d; c.dirY = -dy / d;
+    c.stateTime -= dt;
+    if (c.stateTime <= 0) {
+      c.mode = 'slunge'; c.stateTime = params.spiderLungeTime; c.hitDone = false;
+      c.lungeX = c.dirX; c.lungeY = c.dirY;
+    }
+    return [0, 0, params.critterAccel];
+  }
+  if (c.mode === 'slunge') {
+    c.vx = c.lungeX * params.spiderLungeSpeed; c.vy = c.lungeY * params.spiderLungeSpeed;
+    c.stateTime -= dt;
+    if (c.stateTime <= 0) { c.mode = 'stalk'; c.cooldown = params.spiderCooldown; }
+    return [c.vx, c.vy, Infinity];
+  }
+  // Stalking.
+  if (!state.dead && sameFloor && d < params.spiderLungeRange && c.cooldown <= 0) {
+    c.mode = 'swindup'; c.stateTime = params.spiderWindup; c.stateTotal = params.spiderWindup;
+    return [0, 0, params.critterAccel];
+  }
+  if (!state.dead && d < params.spiderAggro) {
+    c.dirX = -dx / d; c.dirY = -dy / d;
+    return [c.dirX * params.spiderSpeed, c.dirY * params.spiderSpeed, params.critterAccel];
+  }
+  c.timer -= dt;
+  if (c.timer <= 0) {
+    const a = rand(state) * Math.PI * 2;
+    c.dirX = Math.cos(a); c.dirY = Math.sin(a); c.timer = 1.5 + rand(state) * 1.5;
+  }
+  return [c.dirX * params.critterSpeed, c.dirY * params.critterSpeed, params.critterAccel];
+}
+
+// Cotton stainers: alone they wander, flee, or walk to a partner. Two free spiders
 // standing next to each other near the player wind up together, lunge, and
 // are thrown apart afterwards, then can't pair again for attackCooldown.
 // A dashing player kills any spider it touches.
@@ -803,7 +1036,7 @@ function stepSpiders(state, params, dt, dashing) {
   const p = state.player;
   const contact = params.radius + params.critterRadius;
   for (const c of state.critters) {
-    c.px = c.x; c.py = c.y;
+    c.px = c.x; c.py = c.y; c.pz = c.z;
     if (!c.alive) { c.deadTime += dt; continue; }
     c.cooldown = Math.max(0, c.cooldown - dt);
   }
@@ -831,7 +1064,9 @@ function stepSpiders(state, params, dt, dashing) {
     const d = Math.hypot(dx, dy) || 1;
     let tx = 0, ty = 0, accel = params.critterAccel;
 
-    if (c.mode === 'emerge') {
+    if (c.type === 'spider') {
+      [tx, ty, accel] = spiderBrain(state, c, params, dt, dx, dy, d);
+    } else if (c.mode === 'emerge') {
       c.stateTime -= dt;
       if (c.stateTime <= 0) { c.mode = 'wander'; c.cooldown = params.spawnCooldown; c.timer = 0; }
     } else if (c.mode === 'windup') {
@@ -893,12 +1128,14 @@ function stepSpiders(state, params, dt, dashing) {
       }
     }
 
-    if (c.mode !== 'lunge') {
-      if (c.mode === 'windup' || c.mode === 'thrown' || c.mode === 'emerge') { tx = 0; ty = 0; }
-      [c.vx, c.vy] = approach(c.vx, c.vy, tx, ty, accel * dt);
+    if (c.mode !== 'lunge' && c.mode !== 'slunge') {
+      if (c.mode === 'windup' || c.mode === 'thrown' || c.mode === 'emerge' || c.mode === 'swindup') { tx = 0; ty = 0; }
+      [c.vx, c.vy] = approach(c.vx, c.vy, tx, ty, accel * dt * (c.air ? params.airControl : 1));
     }
     const want = Math.hypot(c.vx, c.vy);
     move(state.map, c, { vx: c.vx, vy: c.vy }, dt, params.critterRadius);
+    const cFell = settle(state.map, c, dt, params, params.critterRadius);
+    if (cFell >= 0.5) state.events.push({ type: 'land', who: c.id, x: c.x, y: c.y, height: cFell });
     // Pressed against a wall while wandering: pick a new direction next step.
     if (c.mode === 'wander' && want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
 
@@ -911,7 +1148,7 @@ function stepSpiders(state, params, dt, dashing) {
         killSpider(state, c, b.vx / bs, b.vy / bs); continue;
       }
     }
-    if (c.mode === 'lunge' && !c.hitDone && sameFloor && dist(c, p) < contact + 0.05) {
+    if ((c.mode === 'lunge' || c.mode === 'slunge') && !c.hitDone && sameFloor && dist(c, p) < contact + 0.05) {
       c.hitDone = true;
       hitPlayer(state, c, params);
     }
@@ -927,7 +1164,7 @@ function wallClearance(state, r, p = state.player) {
     for (let tx = ox - 2; tx <= ox + 2; tx++) {
       const cx = Math.min(Math.max(p.x, tx), tx + 1);
       const cy = Math.min(Math.max(p.y, ty), ty + 1);
-      if (!blocks(state.map, ox, oy, tx, ty, cx, cy)) continue;
+      if (!blocks(state.map, p, tx, ty, cx, cy)) continue;
       const inside = p.x > tx && p.x < tx + 1 && p.y > ty && p.y < ty + 1;
       const d = inside ? -1 : Math.hypot(p.x - cx, p.y - cy);
       best = Math.min(best, d - r);
@@ -938,7 +1175,8 @@ function wallClearance(state, r, p = state.player) {
 
 // ---- src/levels.js
 // Level legend (map): '#' wall, '.' floor, 'P' player spawn, '*' battery cell (+3),
-// 'B' big red battery (+9), 'V' vent (spawns spiders), 'b' or 's' spider.
+// 'B' big red battery (+9), 'V' vent (spawns cotton stainers), 'O' cocoon with a web
+// turret (breaks open into a spider), 'b' or 's' cotton stainer.
 // Heights: '0'-'9' flat level; ramps rise toward '>' +x, '<' -x, 'v' +y, '^' -y;
 // stairs rise toward 'E' +x, 'W' -x, 'S' +y, 'N' -y. A slope starts at the level of
 // the tile on its low side and ends one level higher.
@@ -953,14 +1191,14 @@ const LEVELS = [
       '#.....*....#.......*...........#',
       '#.........................B....#',
       '#..#.........*.................#',
-      '#..#...##......................#',
+      '#..#...##..................O...#',
       '#..#...##......................#',
       '#........*..........V..........#',
       '#........##........#...........#',
-      '#........##.................*..#',
+      '#........##.............O...*..#',
       '#..............................#',
       '#...##.........P..........*....#',
-      '#...##.........................#',
+      '#...##..O......................#',
       '#..V......................###..#',
       '#....#.........................#',
       '#...............*..............#',
@@ -968,7 +1206,7 @@ const LEVELS = [
       '#..............................#',
       '#.........*....................#',
       '#....*.........................#',
-      '#.....................*...##...#',
+      '#........O............*...##...#',
       '#..............*..........##...#',
       '#.......#......................#',
       '#............................B.#',
@@ -1019,8 +1257,8 @@ const LEVELS = [
 // ---- src/characters.js
 // Playable bugs. Pure data: rig proportions (src/bug.js), body-motion
 // personality (f / zeta / r, see src/dynamics.js), how the renderer draws
-// them (`kind`) and any gameplay overrides (`params`, merged over the sim's
-// DEFAULT_PARAMS). Each motion preset belongs to one bug.
+// them (`kind`), gameplay stats (`params`, merged over the sim's
+// DEFAULT_PARAMS) and a one-line `special`. Each motion preset belongs to one bug.
 
 const CHARACTERS = [
   {
@@ -1029,6 +1267,7 @@ const CHARACTERS = [
     latin: 'Chondropyga dorsalis',
     preset: 'Default',
     blurb: 'The all-rounder. A steady six-legged trot with a little bounce.',
+    special: 'No weaknesses, no tricks.',
     kind: 'cowboy',
     motion: { bodyF: 3, bodyZeta: 0.5, bodyR: 1, headF: 1.6 },
     rig: { legs: 6, scale: 1 },
@@ -1040,13 +1279,14 @@ const CHARACTERS = [
     latin: 'Lucanus cervus · Hirschkäfer',
     preset: 'Heavy',
     blurb: 'Huge antlers, heavy body. Leans into every turn, never wobbles.',
+    special: 'Tough: 14 health, barely knocked back. Slow, and dashes run hot.',
     kind: 'stag',
     motion: { bodyF: 1.2, bodyZeta: 1.2, bodyR: 0, headF: 1 },
     rig: {
       legs: 6, scale: 1.1, bodyHeight: 0.24, hipAlong: 0.16, footSide: 0.4, footAlong: 0.28,
       thigh: 0.3, shin: 0.38, stepTime: 0.12, neck: 0.3,
     },
-    params: {},
+    params: { maxSpeed: 3.6, accel: 18, decel: 22, dashSpeed: 11, dashHeat: 0.4, maxHealth: 14, knockback: 3, radius: 0.34 },
   },
   {
     id: 'jumper',
@@ -1054,13 +1294,14 @@ const CHARACTERS = [
     latin: 'Salticidae · Springspinne',
     preset: 'Snappy',
     blurb: 'Eight quick legs and big glowing eyes. Goes exactly where you point.',
+    special: 'Long leaping dashes with a short cooldown. Fragile: 7 health.',
     kind: 'jumper',
     motion: { bodyF: 6, bodyZeta: 1, bodyR: 0, headF: 5 },
     rig: {
       legs: 8, scale: 0.9, bodyHeight: 0.2, hipSide: 0.08, hipAlong: 0.07, footSide: 0.5, footAlong: 0.3,
       thigh: 0.34, shin: 0.4, stepThreshold: 0.22, stepTime: 0.06, stepHeight: 0.16, neck: 0.2,
     },
-    params: {},
+    params: { maxSpeed: 5.2, accel: 60, decel: 60, dashSpeed: 16, dashDuration: 0.16, dashCooldown: 0.4, maxHealth: 7, radius: 0.27 },
   },
   {
     id: 'harvestman',
@@ -1068,13 +1309,14 @@ const CHARACTERS = [
     latin: 'Opiliones · Weberknecht',
     preset: 'Springy',
     blurb: 'A tiny body slung between eight absurd legs. Bounces and sways.',
+    special: 'Fast but floaty. Never stunned by falls; webs barely hold it.',
     kind: 'harvestman',
     motion: { bodyF: 2.5, bodyZeta: 0.25, bodyR: 2, headF: 2.5 },
     rig: {
       legs: 8, scale: 1, bodyHeight: 0.48, hipSide: 0.04, hipAlong: 0.03, footSide: 0.9, footAlong: 0.55,
       thigh: 0.62, shin: 0.8, stepThreshold: 0.38, stepTime: 0.1, stepHeight: 0.3, neck: 0.05,
     },
-    params: {},
+    params: { maxSpeed: 5.4, accel: 14, decel: 9, maxHealth: 8, radius: 0.24, fallStunHeight: 99, webSlow: 0.75, webDuration: 1.2 },
   },
   {
     id: 'mantis',
@@ -1082,13 +1324,14 @@ const CHARACTERS = [
     latin: 'Mantis religiosa · Gottesanbeterin',
     preset: 'Robot',
     blurb: 'Walks on four legs, arms folded. Rears back before every move.',
+    special: 'Long reach: its dash strikes from much further away.',
     kind: 'mantis',
     motion: { bodyF: 2, bodyZeta: 0.5, bodyR: -2, headF: 1.6 },
     rig: {
       legs: 4, scale: 1.1, bodyHeight: 0.26, hipSide: 0.06, hipAlong: 0.12, footSide: 0.38, footAlong: 0.32,
       thigh: 0.32, shin: 0.4, stepTime: 0.1, neck: 0.42,
     },
-    params: {},
+    params: { maxSpeed: 4.2, dashSpeed: 14, killMargin: 0.45, maxHealth: 9 },
   },
   {
     id: 'dung',
@@ -1096,10 +1339,11 @@ const CHARACTERS = [
     latin: 'Scarabaeus sacer · Pillendreher',
     preset: 'Own: the ball',
     blurb: 'Pushes a ball that keeps rolling. Kick it with a dash; a fast ball flattens spiders.',
+    special: 'The ball: momentum, kicks, squashes bugs and breaks cocoons. 12 health.',
     kind: 'dung',
     motion: { bodyF: 3, bodyZeta: 0.7, bodyR: 0.5, headF: 2 },
     rig: { legs: 6, scale: 0.9, bodyHeight: 0.18, neck: 0.2 },
-    params: { mech: 'ball' },
+    params: { mech: 'ball', maxSpeed: 4, maxHealth: 12 },
   },
 ];
 
@@ -1199,6 +1443,14 @@ const SPIDER_RIG = {
   stepThreshold: 0.22, stepTime: 0.05, stepHeight: 0.16,
 };
 
+// Cotton stainers: six legs, low flat body, quick short steps.
+const STAINER_RIG = {
+  ...RIG_DEFAULTS, legs: 6, scale: 0.6,
+  bodyF: 4, bodyZeta: 0.8, bodyR: 0, headF: 3,
+  bodyHeight: 0.14, hipSide: 0.07, hipAlong: 0.12, footSide: 0.4, footAlong: 0.28,
+  thigh: 0.3, shin: 0.38, stepThreshold: 0.2, stepTime: 0.045, stepLead: 0.6, stepHeight: 0.12, neck: 0.3,
+};
+
 // Leg layouts. Neighbouring legs on a side, and the same leg across the
 // body, are always in different groups, so the body stays supported.
 const LEG_LAYOUT_6 = [
@@ -1232,6 +1484,10 @@ function createRig(x, y, heading = Math.PI / 4, opts = RIG_DEFAULTS) {
     head: createFollower([x, y], ...m.head),
     targetHeading: heading,
     pos: { x, y }, heading, headPos: { x, y },
+    // Vertical body spring: a landing kicks it down, it bounces back.
+    bob: createFollower(0, 4, 0.35, 0),
+    bodyDip: 0,
+    air: false,
     legs: (opts.legs === 8 ? LEG_LAYOUT_8 : opts.legs === 4 ? LEG_LAYOUT_4 : LEG_LAYOUT_6).map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
     vel: { x: 0, y: 0 },
     time: 0,
@@ -1256,7 +1512,7 @@ function frame(rig) {
 function hipOf(rig, leg) {
   const o = rig.opts, k = o.scale, F = frame(rig);
   const a = leg.along * o.hipAlong * k, sd = leg.side * o.hipSide * k;
-  return { x: rig.pos.x + F.fx * a + F.rx * sd, y: rig.pos.y + F.fy * a + F.ry * sd, z: o.bodyHeight * k };
+  return { x: rig.pos.x + F.fx * a + F.rx * sd, y: rig.pos.y + F.fy * a + F.ry * sd, z: o.bodyHeight * k + rig.bodyDip };
 }
 
 function restOf(rig, leg) {
@@ -1296,11 +1552,18 @@ function snapRig(rig, x, y, heading = rig.heading, blocked) {
   placeFeet(rig, blocked);
 }
 
-// target: simulated position and velocity. blocked(x, y): true on walls.
+// A landing from `height` levels: the body squashes down and springs back.
+function landRig(rig, height) {
+  rig.bob.yd[0] = Math.min(rig.bob.yd[0], -Math.min(2, 0.6 + height * 0.5) * rig.opts.scale);
+}
+
+// target: simulated position, velocity and `air` (falling). blocked(x, y):
+// true where a foot may not land.
 function updateRig(rig, dt, target, blocked) {
   if (dt <= 0) return rig;
   const o = rig.opts;
   rig.time += dt;
+  rig.bodyDip = Math.min(0.1 * o.scale, follow(rig.bob, dt, 0));
   const prev = rig.pos;
   const [bx, by] = follow(rig.body, dt, [target.x, target.y]);
   rig.pos = { x: bx, y: by };
@@ -1320,6 +1583,24 @@ function updateRig(rig, dt, target, blocked) {
   const neck = (o.neck ?? 0.27) * o.scale;
   const [hx, hy] = follow(rig.head, dt, [bx + F.fx * neck, by + F.fy * neck]);
   rig.headPos = { x: hx, y: hy };
+
+  // Falling: legs splay out and flail; nothing is planted.
+  if (target.air) {
+    rig.air = true;
+    rig.legs.forEach((leg, i) => {
+      const r = restOf(rig, leg);
+      const out = 1.15, wig = Math.sin(rig.time * 19 + i * 1.7) * 0.06 * o.scale;
+      leg.foot = { x: rig.pos.x + (r.x - rig.pos.x) * out + wig, y: rig.pos.y + (r.y - rig.pos.y) * out - wig };
+      leg.lift = o.bodyHeight * o.scale * 0.55 + Math.cos(rig.time * 23 + i) * 0.04 * o.scale;
+      leg.t = 1;
+    });
+    return rig;
+  }
+  if (rig.air) {
+    // Just landed: put the feet down where they are.
+    rig.air = false;
+    for (const leg of rig.legs) { leg.lift = 0; leg.from = { ...leg.foot }; }
+  }
 
   // Snap feet that fell hopelessly behind (respawn, very long frame).
   const snap = (o.thigh + o.shin) * o.scale * 2.5;
@@ -1464,7 +1745,8 @@ const VITALS_H = 52;
 const VC = COLORS;
 
 function createVitals(canvas) {
-  canvas.width = VITALS_W;
+  let W = VITALS_W; // grows for bugs with more health than ten
+  canvas.width = W;
   canvas.height = VITALS_H;
   const g = canvas.getContext('2d', { willReadFrequently: true });
   const lut = buildLut();
@@ -1499,18 +1781,18 @@ function createVitals(canvas) {
     // Ribbed slab behind spine and pods, with teeth along both edges.
     g.beginPath();
     g.moveTo(26, 6);
-    for (let x = 26; x < 162; x += 6.5) { g.lineTo(x + 2, 6); g.lineTo(x + 3.5, 3.5); g.lineTo(x + 5, 6); }
-    g.quadraticCurveTo(168, 6, 167, 26);
-    g.quadraticCurveTo(168, 47, 160, 47);
-    for (let x = 160; x > 26; x -= 6.5) { g.lineTo(x - 2, 47); g.lineTo(x - 3.5, 49.5); g.lineTo(x - 5, 47); }
+    for (let x = 26; x < W - 6; x += 6.5) { g.lineTo(x + 2, 6); g.lineTo(x + 3.5, 3.5); g.lineTo(x + 5, 6); }
+    g.quadraticCurveTo(W, 6, W - 1, 26);
+    g.quadraticCurveTo(W, 47, W - 8, 47);
+    for (let x = W - 8; x > 26; x -= 6.5) { g.lineTo(x - 2, 47); g.lineTo(x - 3.5, 49.5); g.lineTo(x - 5, 47); }
     g.closePath();
     g.fillStyle = lin(0, 4, 0, 50, [[0, VC.void2], [0.45, VC.void1], [1, VC.void0]]);
     g.fill();
     g.save(); g.clip();
-    halftone(26, 4, 142, 46, VC.metal0, (x, y) => 0.9 - Math.abs(y - 26) / 26 - (x - 26) / 400);
+    halftone(26, 4, W - 26, 46, VC.metal0, (x, y) => 0.9 - Math.abs(y - 26) / 26 - (x - 26) / 400);
     // Grooves between the rows.
-    g.fillStyle = VC.void0; g.fillRect(26, 27, 142, 1);
-    g.fillStyle = VC.metal1; g.fillRect(26, 28, 142, 1);
+    g.fillStyle = VC.void0; g.fillRect(26, 27, W - 26, 1);
+    g.fillStyle = VC.metal1; g.fillRect(26, 28, W - 26, 1);
     g.restore();
     g.strokeStyle = VC.metal1; g.lineWidth = 1; g.stroke();
   }
@@ -1657,10 +1939,15 @@ function createVitals(canvas) {
 
   // v: { health, maxHealth, charges, maxCharges, bpm, overheated, flash (s), t }
   function draw(v) {
-    g.clearRect(0, 0, VITALS_W, VITALS_H);
+    const want = Math.max(VITALS_W, X0 + Math.max(v.maxHealth, Math.ceil(v.maxCharges / 3)) * STEP + 2);
+    if (want !== W) {
+      W = want; canvas.width = W;
+      canvas.style.setProperty('--vw', String(W));
+    }
+    g.clearRect(0, 0, W, VITALS_H);
     backplate();
-    cord(SPINE_Y, X0 - 4, 164);
-    cord(POD_Y + 19, X0 - 4, 164);
+    cord(SPINE_Y, X0 - 4, W - 4);
+    cord(POD_Y + 19, X0 - 4, W - 4);
     const low = v.health <= 3;
     for (let i = 0; i < v.maxHealth; i++) {
       vertebra(X0 + i * STEP, i < v.health, v.flash > 0 && i < v.health, v.t, i, low);
@@ -1671,10 +1958,10 @@ function createVitals(canvas) {
     }
     organ(v.t, v.bpm, v.charges, v.overheated);
     // Snap to the game palette with ordered dither; keep the outline crisp.
-    const img = g.getImageData(0, 0, VITALS_W, VITALS_H);
-    const alpha = new Uint8Array(VITALS_W * VITALS_H);
+    const img = g.getImageData(0, 0, W, VITALS_H);
+    const alpha = new Uint8Array(W * VITALS_H);
     for (let i = 0; i < alpha.length; i++) alpha[i] = img.data[i * 4 + 3];
-    quantize(img.data, VITALS_W, VITALS_H, lut, 14);
+    quantize(img.data, W, VITALS_H, lut, 14);
     for (let i = 0; i < alpha.length; i++) img.data[i * 4 + 3] = alpha[i] >= 128 ? 255 : 0;
     g.putImageData(img, 0, 0);
   }
@@ -2142,8 +2429,9 @@ function createRenderer(canvas) {
   function drawLeg(rig, leg, style) {
     const o = rig.opts;
     const hip = hipOf(rig, leg);
-    // Feet stand on whatever ground is under them (steps, ramps).
-    const footGround = (lvAt(leg.foot.x, leg.foot.y) - lvAt(rig.pos.x, rig.pos.y)) * LEVEL_Z;
+    // Feet stand on whatever ground is under them (steps, ramps); in the air they hang free.
+    const zl = rig.zLevel ?? lvAt(rig.pos.x, rig.pos.y);
+    const footGround = rig.air ? 0 : (lvAt(leg.foot.x, leg.foot.y) - zl) * LEVEL_Z;
     const foot = { x: leg.foot.x, y: leg.foot.y, z: leg.lift + footGround };
     const knee = legIK(hip, foot, o.thigh * o.scale, o.shin * o.scale);
     ctx.strokeStyle = style.limb; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -2160,8 +2448,18 @@ function createRenderer(canvas) {
     }
   }
 
+  // Ground shadow under a creature that may be in the air: stays on the floor,
+  // shrinks and fades with height.
+  function groundShadow(rig, a, b) {
+    const zl = rig.zLevel ?? lvAt(rig.pos.x, rig.pos.y);
+    const drop = Math.max(0, zl - lvAt(rig.pos.x, rig.pos.y));
+    const f = 1 / (1 + drop * 1.5);
+    ellipsePath(rig.pos.x, rig.pos.y, -drop * LEVEL_Z, rig.heading, a * f, b * f);
+    ctx.fillStyle = C.void1; ctx.fill();
+  }
+
   function drawBug(rig, style, t) {
-    baseZ = lvAt(rig.pos.x, rig.pos.y) * LEVEL_Z;
+    baseZ = (rig.zLevel ?? lvAt(rig.pos.x, rig.pos.y)) * LEVEL_Z;
     drawBugAt(rig, style, t);
     baseZ = 0;
   }
@@ -2180,7 +2478,7 @@ function createRenderer(canvas) {
   function drawBugAt(rig, style, t) {
     const o = rig.opts, k = o.scale;
     const { x, y } = rig.pos, hd = rig.heading;
-    const z = o.bodyHeight * k;
+    const z = o.bodyHeight * k + rig.bodyDip;
     const c = Math.cos(hd), s = Math.sin(hd);
     const kind = style.kind || 'cowboy';
     let [shell, shade, accent, limb] = KIND_COLORS[kind];
@@ -2202,8 +2500,7 @@ function createRenderer(canvas) {
     };
 
     // Shadow and far legs.
-    ellipsePath(x, y, 0, hd, (kind === 'harvestman' ? 0.16 : 0.3) * k, (kind === 'harvestman' ? 0.14 : 0.2) * k);
-    ctx.fillStyle = C.void1; ctx.fill();
+    groundShadow(rig, (kind === 'harvestman' ? 0.16 : 0.3) * k, (kind === 'harvestman' ? 0.14 : 0.2) * k);
     const depth = (l) => { const hp = hipOf(rig, l); return hp.x + hp.y; };
     const mid = x + y;
     const legs = [...rig.legs].sort((a, b) => depth(a) - depth(b));
@@ -2339,13 +2636,14 @@ function createRenderer(canvas) {
     for (let r = 0; r < 3; r++) for (let q = 0; q < 3; q++) out[r * 3 + q] = R[r * 3] * M[q] + R[r * 3 + 1] * M[3 + q] + R[r * 3 + 2] * M[6 + q];
     ballSpin.m = out;
   }
-  function drawBall(b, radius) {
+  function drawBall(b, radius, bz = lvAt(b.x, b.y)) {
     spinBall(b, radius);
-    const X = sx(b.x, b.y), base = sy(b.x, b.y) - liftAt(b.x, b.y);
+    const X = sx(b.x, b.y), base = sy(b.x, b.y) - bz * LEVEL_PX, floor = sy(b.x, b.y) - liftAt(b.x, b.y);
     const R = radius * Math.SQRT2 * HW;
     const Y = base - R * 0.9;
+    const f = 1 / (1 + Math.max(0, (floor - base) / LEVEL_PX) * 1.5); // shadow shrinks while it falls
     ctx.fillStyle = C.void1;
-    ctx.beginPath(); ctx.ellipse(X, base, R * 1.05, R * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(X, floor, R * 1.05 * f, R * 0.5 * f, 0, 0, Math.PI * 2); ctx.fill();
     const g = ctx.createRadialGradient(X - R * 0.35, Y - R * 0.4, R * 0.1, X, Y, R);
     g.addColorStop(0, C.rust1); g.addColorStop(0.45, C.grime); g.addColorStop(1, C.void1);
     ctx.fillStyle = g;
@@ -2388,7 +2686,6 @@ function createRenderer(canvas) {
   }
 
 
-  const SPIDER_SHELLS = [[C.beetleB1, C.beetleB0], [C.beetleA1, C.beetleA0]];
 
   // Spider: big abdomen behind, small thorax in front, eight legs, a row of
   // eyes that glow hot while it winds up and lunges.
@@ -2406,8 +2703,9 @@ function createRenderer(canvas) {
   }
 
   function drawSpiderBody(rig, c, i, t) {
-    baseZ = lvAt(rig.pos.x, rig.pos.y) * LEVEL_Z;
-    drawSpiderAt(rig, c, i, t);
+    baseZ = (rig.zLevel ?? lvAt(rig.pos.x, rig.pos.y)) * LEVEL_Z;
+    if (c.type === 'spider') drawSpiderAt(rig, c, i, t);
+    else drawStainerAt(rig, c, t);
     baseZ = 0;
   }
 
@@ -2416,10 +2714,10 @@ function createRenderer(canvas) {
     const cs = Math.cos(hd), sn = Math.sin(hd);
     const { x, y } = rig.pos;
     const dead = !c.alive;
-    const [shell, shade] = dead ? [C.void2, C.void1] : SPIDER_SHELLS[i % SPIDER_SHELLS.length];
-    const z = dead ? 0.04 : o.bodyHeight * k;
-    ellipsePath(x, y, 0, hd, 0.32 * k, 0.26 * k);
-    ctx.fillStyle = C.void1; ctx.fill();
+    // Cocoon spider: a glossy black widow.
+    const [shell, shade] = dead ? [C.void1, C.void0] : [C.void2, C.void0];
+    const z = (dead ? 0.04 : o.bodyHeight * k) + rig.bodyDip;
+    groundShadow(rig, 0.32 * k, 0.26 * k);
     const style = { limb: dead ? C.void2 : C.limb, legW: 1.4, led: null, shade };
     const depth = (l) => { const hp = hipOf(rig, l); return hp.x + hp.y; };
     const legs = [...rig.legs].sort((a, b) => depth(a) - depth(b));
@@ -2441,7 +2739,7 @@ function createRenderer(canvas) {
     ctx.fillStyle = shell; ctx.fill();
     // Hourglass-ish marking.
     ellipsePath(ax, ay, z + 0.03 * k, hd, 0.07 * k, 0.04 * k);
-    ctx.fillStyle = dead ? C.void1 : C.rust2; ctx.fill();
+    ctx.fillStyle = dead ? C.blood0 : C.blood2; ctx.fill();
     const tx = x + cs * 0.08 * k, ty = y + sn * 0.08 * k;
     ellipsePath(tx, ty, z, hd, 0.11 * k, 0.09 * k);
     ctx.fillStyle = shell; ctx.fill();
@@ -2461,10 +2759,246 @@ function createRenderer(canvas) {
     }
   }
 
+  // Cotton stainer (Dysdercus): flat red oval, black triangle and wing spots,
+  // pale seams, black membrane tip, long black antennae, six black legs.
+  function drawStainerAt(rig, c, t) {
+    const o = rig.opts, k = o.scale, hd = rig.heading;
+    const cs = Math.cos(hd), sn = Math.sin(hd);
+    const { x, y } = rig.pos;
+    const dead = !c.alive;
+    const z = (dead ? 0.03 : o.bodyHeight * k) + rig.bodyDip;
+    const red = dead ? C.blood0 : C.hot0, dark = C.void1;
+    const B = (along, side, zz) => P3(x + (cs * along - sn * side) * k, y + (sn * along + cs * side) * k, zz);
+    const seg = (along, side, zz, a, b, color) => {
+      ellipsePath(x + (cs * along - sn * side) * k, y + (sn * along + cs * side) * k, zz, hd, a * k, b * k);
+      ctx.fillStyle = color; ctx.fill();
+    };
+    const line = (pts, color, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = px(width); ctx.lineCap = 'round';
+      ctx.beginPath(); pts.forEach((q, i2) => (i2 ? ctx.lineTo(...B(...q)) : ctx.moveTo(...B(...q)))); ctx.stroke();
+    };
+    groundShadow(rig, 0.28 * k, 0.16 * k);
+    const style = { limb: dead ? C.void2 : C.limb, legW: 1.4, led: null, shade: dark };
+    const depth = (l) => { const hp = hipOf(rig, l); return hp.x + hp.y; };
+    const legs = [...rig.legs].sort((a, b) => depth(a) - depth(b));
+    if (dead) {
+      ctx.strokeStyle = C.void2; ctx.lineWidth = px(1.2);
+      for (const l of rig.legs) {
+        const hp = hipOf(rig, l);
+        const fx2 = x + (l.foot.x - x) * 0.4, fy2 = y + (l.foot.y - y) * 0.4;
+        ctx.beginPath(); ctx.moveTo(...P3(hp.x, hp.y, z)); ctx.quadraticCurveTo(...P3(fx2, fy2, 0.1 * k), ...P3(fx2 * 0.8 + x * 0.2, fy2 * 0.8 + y * 0.2, 0.02)); ctx.stroke();
+      }
+    } else {
+      for (const l of legs) if (depth(l) < x + y) drawLeg(rig, l, style);
+    }
+    seg(-0.04, 0, z - 0.03 * k, 0.26, 0.14, dark);
+    seg(-0.04, 0, z, 0.25, 0.13, red);
+    if (!dead) {
+      line([[0.1, 0.05, z + 0.012], [-0.16, 0.06, z + 0.012]], C.hot1, 1.5); // glossy highlight
+      // Warning colours should read in the dark: a faint red glow of their own.
+      const [gx, gy] = B(0, 0, z);
+      lights.push({ x: gx, y: gy, r: 26, color: C.hot0, glow: 0.12 });
+    }
+    line([[0.12, 0.12, z + 0.005], [-0.18, 0.12, z + 0.005]], C.bone, 1); // pale seams
+    line([[0.12, -0.12, z + 0.005], [-0.18, -0.12, z + 0.005]], C.bone, 1);
+    seg(-0.24, 0, z + 0.006, 0.06, 0.09, dark); // membrane tip
+    ctx.fillStyle = dark; ctx.beginPath(); // black triangle (scutellum)
+    ctx.moveTo(...B(0.07, -0.06, z + 0.01)); ctx.lineTo(...B(0.07, 0.06, z + 0.01)); ctx.lineTo(...B(-0.05, 0, z + 0.01)); ctx.closePath(); ctx.fill();
+    for (const sd of [-1, 1]) seg(-0.08, sd * 0.065, z + 0.01, 0.035, 0.03, dark); // wing spots
+    seg(0.15, 0, z + 0.01, 0.07, 0.1, red); // pronotum
+    line([[0.12, -0.09, z + 0.015], [0.12, 0.09, z + 0.015]], dark, 1.2); // collar
+    line([[0.19, -0.07, z + 0.015], [0.19, 0.07, z + 0.015]], C.bone, 1);
+    const hx = rig.headPos.x, hy = rig.headPos.y;
+    const ha = ((hx - x) * cs + (hy - y) * sn) / k, hs = (-(hx - x) * sn + (hy - y) * cs) / k;
+    seg(ha, hs, z + 0.01, 0.045, 0.045, red);
+    const angry = c.mode === 'windup' || c.mode === 'lunge';
+    for (const sd of [-1, 1]) {
+      const [ex, ey] = B(ha + 0.02, hs + sd * 0.035, z + 0.03);
+      ctx.fillStyle = dead ? C.void2 : angry ? C.hot1 : C.void0;
+      ctx.fillRect(ex - onePx / 2, ey - onePx / 2, onePx, onePx);
+      if (!dead) line([[ha + 0.03, hs + sd * 0.03, z + 0.03], [ha + 0.16, hs + sd * 0.1, z + 0.09], [ha + 0.3, hs + sd * 0.15, z + 0.05]], C.limb, 1);
+    }
+    if (angry) { const [ex, ey] = B(ha, hs, z); lights.push({ x: ex, y: ey, r: 24, color: C.hot1, glow: 0.3 }); }
+    if (!dead) for (const l of legs) if (depth(l) >= x + y) drawLeg(rig, l, style);
+  }
+
+  // ---- cocoons with web turrets ---------------------------------------------------
+  // A silk egg sac with a riveted turret collar round its middle. The barrel
+  // tracks the player, glows as it charges, and the red eye lights up when it
+  // sees you. Broken: a torn husk with the collar fallen beside it.
+  function drawCocoon(c, t, state) {
+    const X = sx(c.x, c.y), G = sy(c.x, c.y) - c.z * LEVEL_PX;
+    const H = 30, W = 12;
+    ctx.strokeStyle = C.hull1; ctx.lineWidth = px(1);
+    for (let i = 0; i < 4; i++) { // silk guy lines to the floor
+      const a = i * 1.6 + 0.4;
+      ctx.beginPath(); ctx.moveTo(X + Math.cos(a) * 6, G - 8); ctx.lineTo(X + Math.cos(a) * 18, G + Math.sin(a) * 7); ctx.stroke();
+    }
+    ctx.fillStyle = C.void1;
+    ctx.beginPath(); ctx.ellipse(X, G, W + 4, 6, 0, 0, Math.PI * 2); ctx.fill();
+    if (!c.alive) {
+      // Torn husk.
+      ctx.fillStyle = C.hull0;
+      ctx.beginPath(); ctx.moveTo(X - W, G - 4);
+      for (let i = 0; i <= 8; i++) ctx.lineTo(X - W + (i / 8) * W * 2, G - 10 - (i % 2 ? 6 : 0) - hash(i, c.id) * 4);
+      ctx.lineTo(X + W, G - 4); ctx.quadraticCurveTo(X, G + 4, X - W, G - 4); ctx.fill();
+      ctx.fillStyle = C.void0; ctx.beginPath(); ctx.ellipse(X, G - 9, W - 3, 4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = C.metal1; ctx.beginPath(); ctx.ellipse(X + 14, G + 3, 9, 3.5, 0.3, 0, Math.PI * 2); ctx.fill(); // fallen collar
+      ctx.strokeStyle = C.metal3; ctx.lineWidth = px(2);
+      ctx.beginPath(); ctx.moveTo(X + 10, G + 4); ctx.lineTo(X + 22, G + 1); ctx.stroke();
+      return;
+    }
+    const breathe = 1 + Math.sin(t * 2.2 + c.id) * 0.03;
+    const cy = G - H * 0.55;
+    const ux = Math.cos(c.aim), uy = Math.sin(c.aim);
+    const bx = (ux - uy) * HW, by = (ux + uy) * HH, bl = Math.hypot(bx, by) || 1;
+    const barrelBack = ux + uy < 0;
+    const collarY = G - H * 0.48;
+    const charge = Math.min(1, c.charge / 0.45);
+    const drawBarrel = () => {
+      const ex = X + (bx / bl) * 16, ey = collarY + (by / bl) * 16 * 0.6;
+      ctx.lineCap = 'butt';
+      ctx.strokeStyle = C.metal1; ctx.lineWidth = px(5);
+      ctx.beginPath(); ctx.moveTo(X, collarY); ctx.lineTo(ex, ey); ctx.stroke();
+      ctx.strokeStyle = C.metal3; ctx.lineWidth = px(1.5);
+      ctx.beginPath(); ctx.moveTo(X, collarY - 2); ctx.lineTo(ex, ey - 2); ctx.stroke();
+      ctx.fillStyle = charge > 0 ? (charge > 0.6 ? C.hot1 : C.hot0) : C.void0;
+      ctx.beginPath(); ctx.arc(ex, ey, px(2.5 + charge * 1.5), 0, Math.PI * 2); ctx.fill();
+      if (charge > 0) lights.push({ x: ex, y: ey, r: 18 + charge * 22, color: C.hot1, glow: 0.2 + charge * 0.4 });
+    };
+    if (barrelBack) drawBarrel();
+    // Pod.
+    const g = ctx.createRadialGradient(X - 4, cy - 8, 2, X, cy, H * 0.6);
+    g.addColorStop(0, C.bone); g.addColorStop(0.5, C.hull2); g.addColorStop(1, C.hull0);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(X, cy, W * breathe, H * 0.55, 0, 0, Math.PI * 2); ctx.fill();
+    // Silk wrapping, and something shifting inside.
+    ctx.strokeStyle = C.hull1; ctx.lineWidth = px(1);
+    for (let i = -3; i <= 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(X - W * breathe, cy + i * 4 - 3);
+      ctx.quadraticCurveTo(X, cy + i * 4 + 4 + Math.sin(t * 1.5 + i) * 1.5, X + W * breathe, cy + i * 4 - 1);
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(20,24,28,0.35)';
+    ctx.beginPath(); ctx.ellipse(X + Math.sin(t * 0.9 + c.id) * 2.5, cy + 2, 4, 6, 0, 0, Math.PI * 2); ctx.fill();
+    // Turret collar.
+    ctx.fillStyle = C.metal1;
+    ctx.beginPath(); ctx.ellipse(X, collarY, W + 3, 4.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.metal2;
+    ctx.beginPath(); ctx.ellipse(X, collarY - 1.5, W + 2, 3.2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.metal4;
+    for (let i = 0; i < 6; i++) { const a = i * (Math.PI / 3) + t * 0.3; ctx.fillRect(X + Math.cos(a) * (W + 1) - onePx / 2, collarY - 1.5 + Math.sin(a) * 2.6 - onePx / 2, onePx, onePx); }
+    // Sensor eye on the collar, facing the aim.
+    const eyeX = X + (bx / bl) * (W - 2), eyeY = collarY - 1 + (by / bl) * 2;
+    ctx.fillStyle = c.sees ? C.hot1 : C.blood0;
+    ctx.beginPath(); ctx.arc(eyeX, eyeY, px(1.6), 0, Math.PI * 2); ctx.fill();
+    if (c.sees) lights.push({ x: eyeX, y: eyeY, r: 18, color: C.hot1, glow: 0.25 });
+    if (!barrelBack) drawBarrel();
+    lights.push({ x: X, y: cy, r: 30, color: C.bone, glow: 0.05 });
+  }
+
+  // A web in flight: a spinning net blob trailing a thread back to its turret.
+  function drawWeb(w, t, state) {
+    const X = sx(w.x, w.y), Y = sy(w.x, w.y) - w.z * LEVEL_PX;
+    const src = state.cocoons.find((c) => c.id === w.from);
+    if (src && src.alive) {
+      const SX = sx(src.x, src.y), SY = sy(src.x, src.y) - src.z * LEVEL_PX - 14;
+      ctx.globalAlpha = 0.5; ctx.strokeStyle = C.hull2; ctx.lineWidth = px(1);
+      ctx.beginPath(); ctx.moveTo(SX, SY); ctx.quadraticCurveTo((SX + X) / 2, (SY + Y) / 2 + 6, X, Y); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    const spin = t * 10 + w.id;
+    ctx.strokeStyle = C.bone; ctx.lineWidth = px(1);
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = spin + (i / 6) * Math.PI * 2;
+      ctx.moveTo(X, Y); ctx.lineTo(X + Math.cos(a) * 7, Y + Math.sin(a) * 4.5);
+    }
+    ctx.stroke();
+    ctx.beginPath();
+    for (let i = 0; i <= 6; i++) {
+      const a = spin + (i / 6) * Math.PI * 2;
+      const r = 4 + Math.sin(t * 20 + i) * 0.6;
+      if (i) ctx.lineTo(X + Math.cos(a) * r, Y + Math.sin(a) * r * 0.65); else ctx.moveTo(X + Math.cos(a) * r, Y + Math.sin(a) * r * 0.65);
+    }
+    ctx.stroke();
+    lights.push({ x: X, y: Y, r: 16, color: C.bone, glow: 0.15 });
+  }
+
+  // The web wrapped round the player: spokes from the body to its feet and
+  // around it, rings strung between them. It moves with the legs, trembles,
+  // and fades (or bursts apart when torn by a dash) when the slowdown ends.
+  const net = { strength: 0, torn: false };
+  function webTorn() { net.torn = true; }
+  function drawNet(rig, p, t, dt) {
+    if (p.webbed > 0) { net.strength = 1; net.torn = false; } else net.strength = Math.max(0, net.strength - dt / (net.torn ? 0.25 : 0.6));
+    if (net.strength <= 0) return;
+    const o = rig.opts, k = o.scale;
+    const zl = rig.zLevel ?? lvAt(rig.pos.x, rig.pos.y);
+    baseZ = zl * LEVEL_Z;
+    const z = o.bodyHeight * k + rig.bodyDip;
+    const [cx, cy] = P3(rig.pos.x, rig.pos.y, z + 0.06);
+    const spread = net.torn ? 1 + (1 - net.strength) * 0.9 : 1;
+    // Anchors: every foot, plus a ring round the body on the ground.
+    const anchors = rig.legs.map((l) => {
+      const fg = rig.air ? 0 : (lvAt(l.foot.x, l.foot.y) - zl) * LEVEL_Z;
+      return P3(l.foot.x, l.foot.y, l.lift + fg);
+    });
+    for (let i = 0; i < 6; i++) {
+      const a = rig.heading + (i / 6) * Math.PI * 2 + 0.3;
+      anchors.push(P3(rig.pos.x + Math.cos(a) * 0.42 * k, rig.pos.y + Math.sin(a) * 0.42 * k, 0));
+    }
+    const spokes = anchors
+      .map(([ax, ay]) => [cx + (ax - cx) * spread, cy + (ay - cy) * spread])
+      .sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+    ctx.globalAlpha = 0.85 * net.strength;
+    ctx.strokeStyle = C.bone; ctx.lineWidth = px(1);
+    ctx.beginPath();
+    spokes.forEach(([ax, ay], i) => {
+      const sag = 2 + Math.sin(t * 7 + i * 1.3) * 1.2;
+      ctx.moveTo(cx, cy); ctx.quadraticCurveTo((cx + ax) / 2, (cy + ay) / 2 + sag, ax, ay);
+    });
+    ctx.stroke();
+    ctx.strokeStyle = C.hull2;
+    for (const f of [0.3, 0.55, 0.8]) {
+      ctx.beginPath();
+      spokes.forEach(([ax, ay], i) => {
+        const j = spokes[(i + 1) % spokes.length];
+        if (net.torn && i % 2) return; // torn rings hang in pieces
+        const x0 = cx + (ax - cx) * f, y0 = cy + (ay - cy) * f;
+        const x1 = cx + (j[0] - cx) * f, y1 = cy + (j[1] - cy) * f;
+        const wob = Math.sin(t * 6 + i * 1.7 + f * 9) * 1.2;
+        ctx.moveTo(x0, y0); ctx.quadraticCurveTo((x0 + x1) / 2, (y0 + y1) / 2 + 1.5 + wob, x1, y1);
+      });
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    baseZ = 0;
+  }
+
+  // Webs that hit a wall stay stuck there for a few seconds.
+  const splats = [];
+  function webSplat(x, y, z) { splats.push({ x, y, z, life: 1 }); }
+  function drawSplats(dt) {
+    for (const sp of splats) {
+      sp.life -= dt / 4;
+      if (sp.life <= 0) continue;
+      const X = sx(sp.x, sp.y), Y = sy(sp.x, sp.y) - sp.z * LEVEL_PX;
+      ctx.globalAlpha = Math.min(1, sp.life * 2) * 0.8;
+      ctx.strokeStyle = C.bone; ctx.lineWidth = px(1);
+      ctx.beginPath();
+      for (let i = 0; i < 7; i++) { const a = (i / 7) * Math.PI * 2 + sp.x; ctx.moveTo(X, Y); ctx.lineTo(X + Math.cos(a) * 9, Y + Math.sin(a) * 6); }
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    while (splats.length && splats[0].life <= 0) splats.shift();
+  }
+
   // Jagged electric arc between two spiders; brighter as the wind-up completes.
   function drawArc(ra, rb, t, charge) {
-    const za = ra.opts.bodyHeight * ra.opts.scale + lvAt(ra.pos.x, ra.pos.y) * LEVEL_Z;
-    const zb = rb.opts.bodyHeight * rb.opts.scale + lvAt(rb.pos.x, rb.pos.y) * LEVEL_Z;
+    const za = ra.opts.bodyHeight * ra.opts.scale + (ra.zLevel ?? lvAt(ra.pos.x, ra.pos.y)) * LEVEL_Z;
+    const zb = rb.opts.bodyHeight * rb.opts.scale + (rb.zLevel ?? lvAt(rb.pos.x, rb.pos.y)) * LEVEL_Z;
     const [x0, y0] = P3(ra.pos.x, ra.pos.y, za), [x1, y1] = P3(rb.pos.x, rb.pos.y, zb);
     const seg = 6, jitter = 3 + charge * 5, frame = Math.floor(t * 24);
     for (const [color, wdt] of [[C.elec1, 2], [C.elec2, 1]]) {
@@ -2602,6 +3136,21 @@ function createRenderer(canvas) {
     }
   }
 
+  function puff(x, y, z, n, colors, speed = 50, rise = 20) {
+    const X = sx(x, y), Y = sy(x, y) - z * LEVEL_PX;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + Math.random() * 0.4;
+      fx.particles.push({
+        x: X, y: Y - 2, vx: Math.cos(a) * speed * (0.6 + Math.random() * 0.6), vy: Math.sin(a) * speed * 0.45 - rise,
+        life: 1, fade: 1.6 + Math.random(), grav: 60, color: colors[i % colors.length], size: 2 + (i % 2),
+      });
+    }
+  }
+  // Dust ring when something lands; bigger for bigger falls.
+  const dust = (x, y, z, height) => puff(x, y, z, Math.min(24, 6 + Math.round(height * 6)), [C.conc3, C.metal3, C.conc2], 40 + height * 20, 8);
+  const cocoonBurst = (x, y, z) => { puff(x, y, z + 0.6, 22, [C.bone, C.hull2, C.hull1], 70, 40); puff(x, y, z + 0.6, 8, [C.elec2, C.hot1], 110, 50); };
+  const muzzle = (x, y, z) => puff(x, y, z + 0.6, 6, [C.hot1, C.bone], 50, 10);
+
   function hitFx(x, y) {
     for (let i = 0; i < 18; i++) {
       const a = (i / 18) * Math.PI * 2;
@@ -2635,7 +3184,7 @@ function createRenderer(canvas) {
       const n = p.overheated ? 3 : 1;
       for (let i = 0; i < n; i++) {
         if (Math.random() > dt * 30) continue;
-        const [X, Y] = P3(rig.pos.x, rig.pos.y, rig.opts.bodyHeight + lvAt(rig.pos.x, rig.pos.y) * LEVEL_Z);
+        const [X, Y] = P3(rig.pos.x, rig.pos.y, rig.opts.bodyHeight + (rig.zLevel ?? lvAt(rig.pos.x, rig.pos.y)) * LEVEL_Z);
         const steam = Math.random() < 0.6;
         fx.particles.push(steam
           ? { x: X + (Math.random() - 0.5) * 12, y: Y - 4, vx: (Math.random() - 0.5) * 10, vy: -25, life: 1, fade: 1.2, grav: -10, color: C.metal4, size: 3 }
@@ -2763,9 +3312,11 @@ function createRenderer(canvas) {
       const rig = rigs.critters.get(c.id);
       if (rig) items.push({ d: standDepth(rig.pos.x, rig.pos.y) - (c.alive ? 0 : 0.01), k: 3, rig, i: c.id, c });
     }
-    if (p.ball) items.push({ d: standDepth(p.ball.x, p.ball.y), k: 1.5, b: p.ball });
+    if (p.ball) items.push({ d: standDepth(p.ball.x, p.ball.y), k: 1.5, b: p.ball, bz: (p.ball.pz ?? p.ball.z) + (p.ball.z - (p.ball.pz ?? p.ball.z)) * view.alpha });
+    for (const c of state.cocoons) items.push({ d: standDepth(c.x, c.y), k: 1.2, cocoon: c });
+    for (const w of state.webs) items.push({ d: standDepth(w.x, w.y) + 0.3, k: 4, web: w });
     const pd = standDepth(pr.pos.x, pr.pos.y);
-    const pz = lvAt(pr.pos.x, pr.pos.y);
+    const pz = pr.zLevel ?? lvAt(pr.pos.x, pr.pos.y);
     items.push({ d: pd, k: 2 });
     items.sort((a, b) => a.d - b.d || a.k - b.k);
 
@@ -2779,7 +3330,9 @@ function createRenderer(canvas) {
         else drawColumn(it.tx, it.ty, t, fade ? 0.35 : 1);
       } else if (it.k === 0.5) drawVent(it.v, t, dt);
       else if (it.k === 1) drawCell(it.s, t);
-      else if (it.k === 1.5) drawBall(it.b, rigs.ballRadius || 0.32);
+      else if (it.k === 1.5) drawBall(it.b, rigs.ballRadius || 0.32, it.bz);
+      else if (it.k === 1.2) drawCocoon(it.cocoon, t, state);
+      else if (it.k === 4) drawWeb(it.web, t, state);
       else if (it.k === 3) drawSpider(it.rig, it.c, it.i, t);
       else {
         const empty = p.charges <= 0;
@@ -2788,6 +3341,7 @@ function createRenderer(canvas) {
           shell: empty ? C.hull0 : C.hull1, shade: empty ? C.metal1 : C.hull0, limb: C.limb,
           legW: 3, led: p.heat, overheated: p.overheated, empty,
         }, t);
+        drawNet(pr, p, t, dt);
       }
     }
 
@@ -2807,6 +3361,8 @@ function createRenderer(canvas) {
       baseZ = 0;
       ctx.globalAlpha = 0.5; ctx.strokeStyle = C.metal4; ctx.lineWidth = px(1); ctx.stroke(); ctx.globalAlpha = 1;
     }
+
+    drawSplats(dt);
 
     for (const q of fx.particles) {
       ctx.globalAlpha = Math.max(0, Math.min(1, q.life));
@@ -2859,11 +3415,12 @@ function createRenderer(canvas) {
 
   return {
     resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals,
+    dust, cocoonBurst, muzzle, webSplat, webTorn,
     ventPuff: (v) => ventPuff(v, 14),
     renderPreview,
     resetBall: () => { ballSpin.x = null; ballSpin.m = [1, 0, 0, 0, 1, 0, 0, 0, 1]; },
     bigBurst: (x, y) => { burst(x, y); burst(x, y); },
-    screenOf: (x, y) => ({ x: sx(x, y), y: sy(x, y) - liftAt(x, y) }),
+    screenOf: (x, y, z) => ({ x: sx(x, y), y: sy(x, y) - (z ?? lvAt(x, y)) * LEVEL_PX }),
     get size() { return { w, h }; },
   };
 }
@@ -2922,6 +3479,9 @@ function start(snapshot) {
   const rigOpts = { ...charRig(character), ...(stored.rigFor === character.id ? stored.rig : {}) };
   // What the simulation runs with: tunables plus the bug's own mechanics.
   const simParams = () => ({ ...params, ...character.params });
+  // Panel values start from the chosen bug's own stats.
+  const loadStats = () => Object.assign(params, DEFAULT_PARAMS, stored.params, character.params);
+  loadStats();
   const look = { ...LOOK_DEFAULTS, ...stored.look };
   let best = load(BEST_KEY) ?? {};
 
@@ -2951,7 +3511,11 @@ function start(snapshot) {
     const ids = new Set();
     for (const c of state.critters) {
       ids.add(c.id);
-      if (!rigs.critters.has(c.id)) rigs.critters.set(c.id, createRig(c.x, c.y, Math.atan2(c.dirY, c.dirX) || c.id * 1.3, SPIDER_RIG));
+      if (!rigs.critters.has(c.id)) {
+        const rig = createRig(c.x, c.y, Math.atan2(c.dirY, c.dirX) || c.id * 1.3, c.type === 'spider' ? SPIDER_RIG : STAINER_RIG);
+        rig.zLevel = c.z;
+        rigs.critters.set(c.id, rig);
+      }
     }
     for (const id of rigs.critters.keys()) if (!ids.has(id)) rigs.critters.delete(id);
   }
@@ -2991,11 +3555,31 @@ function start(snapshot) {
     const card = document.createElement('button');
     card.type = 'button'; card.className = 'char'; card.dataset.id = ch.id;
     card.innerHTML = `<canvas width="120" height="76" aria-hidden="true"></canvas>
-      <span class="cname"></span><span class="clatin"></span><span class="cpreset"></span><span class="cblurb"></span>`;
+      <span class="cname"></span><span class="clatin"></span><span class="cpreset"></span><span class="cblurb"></span>
+      <span class="cstats"></span><span class="cspecial"></span>`;
     card.querySelector('.cname').textContent = ch.name;
     card.querySelector('.clatin').textContent = ch.latin;
     card.querySelector('.cpreset').textContent = `Motion: ${ch.preset}`;
     card.querySelector('.cblurb').textContent = ch.blurb;
+    card.querySelector('.cspecial').textContent = ch.special;
+    // Stat bars, scaled to the best value among all bugs.
+    const st = { ...DEFAULT_PARAMS, ...ch.params };
+    const all = CHARACTERS.map((c) => ({ ...DEFAULT_PARAMS, ...c.params }));
+    const rows = [
+      ['Speed', st.maxSpeed, Math.max(...all.map((a) => a.maxSpeed))],
+      ['Health', st.maxHealth, Math.max(...all.map((a) => a.maxHealth))],
+      ['Dash', st.dashSpeed * st.dashDuration, Math.max(...all.map((a) => a.dashSpeed * a.dashDuration))],
+    ];
+    const stats = card.querySelector('.cstats');
+    for (const [label, v, max] of rows) {
+      const row = document.createElement('span');
+      row.className = 'stat-row';
+      row.innerHTML = '<span class="sl"></span><span class="bar"><i></i></span><span class="sv"></span>';
+      row.querySelector('.sl').textContent = label;
+      row.querySelector('i').style.width = `${Math.round((v / max) * 100)}%`;
+      row.querySelector('.sv').textContent = label === 'Dash' ? `${v.toFixed(1)} t` : label === 'Speed' ? `${v}` : `${v}`;
+      stats.append(row);
+    }
     card.addEventListener('click', () => chooseCharacter(ch.id));
     grid.append(card);
     const rig = createRig(0, 0, 0, charRig(ch));
@@ -3020,7 +3604,10 @@ function start(snapshot) {
     const changed = id !== character.id;
     character = characterById(id);
     save(CHAR_KEY, character.id);
-    if (changed) { Object.keys(rigOpts).forEach((k) => delete rigOpts[k]); Object.assign(rigOpts, charRig(character)); persist(); buildPanel(); }
+    if (changed) {
+      Object.keys(rigOpts).forEach((k) => delete rigOpts[k]); Object.assign(rigOpts, charRig(character));
+      stored.params = {}; loadStats(); persist(); buildPanel();
+    }
     markChosen();
     closeMenu();
     restart();
@@ -3309,6 +3896,17 @@ function start(snapshot) {
       if (e.type === 'pickup') { if (e.big) renderer.bigBurst(e.x, e.y); else renderer.burst(e.x, e.y); }
       else if (e.type === 'kill') { renderer.splat(e.x, e.y); renderer.bloodSplatter(state.map, e.x, e.y, e.dirX, e.dirY); }
       else if (e.type === 'hit') { renderer.hitFx(ix, iy); shake = 0.25; vitalsFlash = 0.2; }
+      else if (e.type === 'land') {
+        renderer.dust(e.x, e.y, groundLevel(state.map, e.x, e.y), e.height);
+        const rig = e.who === 'player' ? rigs.player : rigs.critters.get(e.who);
+        if (rig) landRig(rig, e.height);
+        if (e.who === 'player' && e.height >= 1.5) shake = Math.max(shake, 0.15);
+      }
+      else if (e.type === 'cocoon') renderer.cocoonBurst(e.x, e.y, groundLevel(state.map, e.x, e.y));
+      else if (e.type === 'shoot') renderer.muzzle(e.x, e.y, groundLevel(state.map, e.x, e.y));
+      else if (e.type === 'webSplat') renderer.webSplat(e.x, e.y, e.z);
+      else if (e.type === 'webTorn') renderer.webTorn();
+      else if (e.type === 'webbed') shake = Math.max(shake, 0.08);
       else if (e.type === 'spawn') renderer.ventPuff({ x: e.x, y: e.y });
       else if (e.type === 'corpse') renderer.bakeHusk(state.map, e.x, e.y);
       else if (e.type === 'win') onWin();
@@ -3359,20 +3957,24 @@ function start(snapshot) {
       bodyF: rigOpts.bodyF * (1 + 0.8 * p.heat),
       bodyZeta: rigOpts.bodyZeta * (1 - 0.6 * p.heat),
     });
-    updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy }, footBlocked(rigs.player));
+    // Heights come from the simulation, interpolated like positions.
+    const lerpZ = (e) => (e.pz ?? e.z) + (e.z - (e.pz ?? e.z)) * view.alpha;
+    rigs.player.zLevel = lerpZ(p);
+    updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy, air: p.air }, footBlocked(rigs.player));
     for (const c of state.critters) {
+      const rig = rigs.critters.get(c.id);
+      rig.zLevel = lerpZ(c);
       if (!c.alive) continue; // corpses stay where they fell
       const cx = c.px + (c.x - c.px) * view.alpha, cy = c.py + (c.y - c.py) * view.alpha;
-      const rig = rigs.critters.get(c.id);
-      updateRig(rig, adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, footBlocked(rig));
+      updateRig(rig, adt, { x: cx, y: cy, vx: c.vx, vy: c.vy, air: c.air }, footBlocked(rig));
     }
     vitalsFlash = Math.max(0, vitalsFlash - dt);
     vitals.draw({
       health: p.health, maxHealth: params.maxHealth, charges: p.charges, maxCharges: params.maxCharges,
       bpm: 60 + p.heat * 120, overheated: p.overheated, flash: vitalsFlash, t: clock,
     });
-    // Camera eases toward the player; lag is the time constant in seconds.
-    const target = renderer.screenOf(ix, iy);
+    // Camera eases toward the player (at its real height, also mid-fall).
+    const target = renderer.screenOf(ix, iy, rigs.player.zLevel);
     const k = view.camLag > 0 ? 1 - Math.exp(-dt / view.camLag) : 1;
     view.camX += (target.x - view.camX) * k;
     view.camY += (target.y - 10 - view.camY) * k;

@@ -34,6 +34,30 @@ export const DEFAULT_PARAMS = {
   emergeTime: 0.6,
   spawnCooldown: 1.5, // attack cooldown of a freshly spawned spider
   corpseTime: 12,
+  // Falling: entities can step off ledges (never climb them).
+  gravity: 30, // levels/s²
+  airControl: 0.35, // share of acceleration available in the air
+  fallStunHeight: 1.5, // landing from this many levels or more stuns
+  fallStun: 0.25, // s
+  // Cocoons with web turrets, and the spiders inside them.
+  cocoonRadius: 0.32,
+  turretRange: 7, // tiles
+  turretTurn: 3, // rad/s
+  turretCharge: 0.45, // s of visible wind-up before a shot
+  turretReload: 2.6, // s between shots (x 0.8..1.2)
+  webSpeed: 6.5, // tiles/s
+  webRadius: 0.18,
+  webRange: 9, // tiles before a web drops
+  webDuration: 2.5, // s of slowdown
+  webSlow: 0.45, // speed and acceleration multiplier while webbed
+  spiderDrop: 1.4, // levels above the cocoon a spider falls from
+  spiderSpeed: 2.6,
+  spiderAggro: 8,
+  spiderLungeRange: 1.6,
+  spiderWindup: 0.3,
+  spiderLungeSpeed: 7.5,
+  spiderLungeTime: 0.28,
+  spiderCooldown: 1.6,
   // Movement mechanics: 'normal', or 'ball' (dung beetle pushing a ball).
   mech: 'normal',
   ballRadius: 0.32,
@@ -94,6 +118,7 @@ export function parseLevel(def) {
   const shards = [];
   const critters = [];
   const vents = [];
+  const cocoons = [];
   let spawn = { x: w / 2, y: h / 2 };
   for (let ty = 0; ty < h; ty++) {
     for (let tx = 0; tx < w; tx++) {
@@ -103,6 +128,7 @@ export function parseLevel(def) {
       else if (c === '*') shards.push({ x: tx + 0.5, y: ty + 0.5, big: false });
       else if (c === 'B') shards.push({ x: tx + 0.5, y: ty + 0.5, big: true });
       else if (c === 'V') vents.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === 'O') cocoons.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'b' || c === 's') critters.push({ x: tx + 0.5, y: ty + 0.5 });
       const hc = (hrows[ty] ?? '')[tx] ?? '0';
       const i = ty * w + tx;
@@ -117,7 +143,7 @@ export function parseLevel(def) {
     const lx = tx - sdx[i], ly = ty - sdy[i];
     level[i] = lx >= 0 && ly >= 0 && lx < w && ly < h ? level[ly * w + lx] : 0;
   }
-  return { name: def.name, w, h, solid, level, kind, sdx, sdy, shards, critters, vents, spawn };
+  return { name: def.name, w, h, solid, level, kind, sdx, sdy, shards, critters, vents, cocoons, spawn };
 }
 
 export function isSolid(map, tx, ty) {
@@ -145,12 +171,54 @@ export function groundLevel(map, x, y) {
   return tileLevelAt(map, Math.floor(x), Math.floor(y), x, y);
 }
 
-// Can something standing on tile (ox, oy) touch tile (tx, ty) at point (cx, cy)?
-// Walls never; otherwise both surfaces must be at the same height there.
-export function blocks(map, ox, oy, tx, ty, cx, cy) {
+// Largest drop (levels) that still counts as walking, e.g. down a ramp.
+export const STEP_DOWN = 0.15;
+
+// Does tile (tx, ty) block entity e (with x, y, z, air) at contact point
+// (cx, cy)? Walls always do. Other tiles only when their surface there is
+// higher than the entity: you can step off a ledge, never walk up a cliff.
+// On the ground the comparison uses the entity's own tile at the contact
+// point, which is what lets a body leave the top of a ramp; in the air (or
+// already past the edge) it uses the entity's height.
+export function blocks(map, e, tx, ty, cx, cy) {
   if (isSolid(map, tx, ty)) return true;
+  const ox = Math.floor(e.x), oy = Math.floor(e.y);
   if (tx === ox && ty === oy) return false;
-  return Math.abs(tileLevelAt(map, tx, ty, cx, cy) - tileLevelAt(map, ox, oy, cx, cy)) > LEVEL_TOL;
+  const airborne = e.air || tileLevelAt(map, ox, oy, e.x, e.y) < e.z - STEP_DOWN;
+  const here = airborne ? e.z : tileLevelAt(map, ox, oy, cx, cy);
+  return tileLevelAt(map, tx, ty, cx, cy) > here + LEVEL_TOL;
+}
+
+// Can you get from tile a to its 4-neighbour b (on foot or by dropping)?
+export function canPass(map, ax, ay, bx, by) {
+  if (isSolid(map, ax, ay) || isSolid(map, bx, by)) return false;
+  const ex = bx > ax ? bx : bx < ax ? ax : null, ey = by > ay ? by : by < ay ? ay : null;
+  for (const t of [0.05, 0.5, 0.95]) {
+    const x = ex ?? ax + t, y = ey ?? ay + t;
+    if (tileLevelAt(map, bx, by, x, y) > tileLevelAt(map, ax, ay, x, y) + LEVEL_TOL) return false;
+  }
+  return true;
+}
+
+// Vertical motion after a horizontal move: follow the ground on slopes and
+// small steps, otherwise fall. Returns the height fallen when it lands.
+function settle(map, e, dt, params, r) {
+  const ground = groundLevel(map, e.x, e.y);
+  e.pz ??= e.z;
+  if (!e.air) {
+    if (ground >= e.z - STEP_DOWN) { e.z = ground; return 0; }
+    e.air = true; e.vz = 0; e.fallFrom = e.z;
+  }
+  e.vz -= params.gravity * dt;
+  e.z += e.vz * dt;
+  let fell = 0;
+  if (e.z <= ground) {
+    fell = Math.max(e.fallFrom - ground, 1e-6);
+    e.z = ground; e.vz = 0; e.air = false;
+  }
+  // Having dropped, a cliff face it was beside may now be above it: slide off it.
+  resolveWalls(map, e, r, [e]);
+  return fell;
 }
 
 // Open edge between 4-neighbours a and b (used for reachability checks).
@@ -169,8 +237,9 @@ export function edgeOpen(map, ax, ay, bx, by) {
 export function makeSpider(state, x, y, extra = {}) {
   const c = {
     id: state.nextId++,
-    x, y, z: groundLevel(state.map, x, y), px: x, py: y, vx: 0, vy: 0,
+    x, y, z: groundLevel(state.map, x, y), pz: 0, vz: 0, air: false, px: x, py: y, vx: 0, vy: 0,
     dirX: 0, dirY: 0, timer: 0, fleeing: false,
+    type: 'stainer', // 'stainer' (cotton stainer, hunts in pairs) or 'spider' (from cocoons, hunts alone)
     alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
     lungeX: 0, lungeY: 0, stateTime: 0, stateTotal: 0, deadTime: 0,
     ...extra,
@@ -191,7 +260,7 @@ export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
     hits: 0,
     map,
     player: {
-      x: map.spawn.x, y: map.spawn.y, z: groundLevel(map, map.spawn.x, map.spawn.y),
+      x: map.spawn.x, y: map.spawn.y, z: groundLevel(map, map.spawn.x, map.spawn.y), vz: 0, air: false,
       px: map.spawn.x, py: map.spawn.y, // position before the last step, for render interpolation
       vx: 0, vy: 0,
       faceX: Math.SQRT1_2, faceY: Math.SQRT1_2,
@@ -202,6 +271,7 @@ export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
       charges: params.startCharges, // each dash spends one
       health: params.maxHealth,
       stun: 0, invuln: 0,
+      webbed: 0, // s of web slowdown left
     },
     shards: map.shards.map((s) => ({ x: s.x, y: s.y, big: s.big, taken: false })),
     collected: 0,
@@ -213,10 +283,15 @@ export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
   map.critters.forEach((c, i) => makeSpider(state, c.x, c.y, { timer: 0.3 * i }));
   if (params.mech === 'ball') {
     const p = state.player, gap = params.radius + params.ballRadius;
-    p.ball = { x: p.x + p.faceX * gap, y: p.y + p.faceY * gap, vx: 0, vy: 0, z: 0 };
+    p.ball = { x: p.x + p.faceX * gap, y: p.y + p.faceY * gap, vx: 0, vy: 0, z: p.z, vz: 0, air: false };
     move(map, p.ball, { vx: 0, vy: 0 }, 0, params.ballRadius);
     separate(map, p, p.ball, gap, params);
   }
+  state.cocoons = map.cocoons.map((c) => ({
+    id: state.nextId++, x: c.x, y: c.y, z: groundLevel(map, c.x, c.y), alive: true,
+    aim: rand(state) * Math.PI * 2, reload: 1 + rand(state) * 2, charge: 0, sees: false,
+  }));
+  state.webs = [];
   state.vents = map.vents.map((v) => ({
     x: v.x, y: v.y,
     timer: params.ventFirstMin + rand(state) * (params.ventFirstMax - params.ventFirstMin),
@@ -258,14 +333,13 @@ function approach(vx, vy, tx, ty, maxDelta) {
 function resolveWalls(map, p, r, vels) {
   for (let pass = 0; pass < 4; pass++) {
     let hit = false;
-    const ox = Math.floor(p.x), oy = Math.floor(p.y); // the tile it stands on
     const x0 = Math.floor(p.x - r), x1 = Math.floor(p.x + r);
     const y0 = Math.floor(p.y - r), y1 = Math.floor(p.y + r);
     for (let ty = y0; ty <= y1; ty++) {
       for (let tx = x0; tx <= x1; tx++) {
         const cx = Math.min(Math.max(p.x, tx), tx + 1);
         const cy = Math.min(Math.max(p.y, ty), ty + 1);
-        if (!blocks(map, ox, oy, tx, ty, cx, cy)) continue;
+        if (!blocks(map, p, tx, ty, cx, cy)) continue;
         let nx = p.x - cx;
         let ny = p.y - cy;
         const d2 = nx * nx + ny * ny;
@@ -308,7 +382,6 @@ function move(map, p, mv, dt, r) {
     p.y += mv.vy * h;
     resolveWalls(map, p, r, [mv, p]);
   }
-  p.z = groundLevel(map, p.x, p.y);
 }
 
 const SAME_FLOOR = 0.5; // vertical reach for pickups, hits and kills (levels)
@@ -320,14 +393,19 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   if (state.dead) {
     // Frozen: keep interpolation still, change nothing else.
     p.px = p.x; p.py = p.y;
-    for (const c of state.critters) { c.px = c.x; c.py = c.y; }
+    p.pz = p.z;
+    for (const c of state.critters) { c.px = c.x; c.py = c.y; c.pz = c.z; }
     return state;
   }
   const r = params.radius;
-  p.px = p.x; p.py = p.y;
+  p.px = p.x; p.py = p.y; p.pz = p.z;
 
   p.stun = Math.max(0, p.stun - dt);
   p.invuln = Math.max(0, p.invuln - dt);
+  if (p.webbed > 0) {
+    p.webbed = Math.max(0, p.webbed - dt);
+    if (p.webbed === 0) state.events.push({ type: 'webFree' });
+  }
   const stunned = p.stun > 0;
   const dir = stunned ? { x: 0, y: 0, mag: 0 } : inputToWorld(input.x || 0, input.y || 0, params.diagonalMode);
   if (dir.mag > 0) {
@@ -346,13 +424,15 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     p.dashTime = params.mech === 'ball' && kickBall(state, params) ? 0 : params.dashDuration;
     p.dashCooldown = params.dashCooldown;
     p.dashBuffer = 0;
+    if (p.webbed > 0) { p.webbed = 0; state.events.push({ type: 'webTorn' }); } // a dash tears the web
     p.heat = Math.min(1, p.heat + params.dashHeat);
     if (p.heat >= 1) p.overheated = true;
   } else {
     p.heat = Math.max(0, p.heat - params.heatCool * dt);
     if (p.overheated && p.heat <= params.overheatRecover) p.overheated = false;
   }
-  const topSpeed = params.maxSpeed * (p.overheated ? params.overheatSpeed : 1);
+  const slow = p.webbed > 0 ? params.webSlow : 1;
+  const topSpeed = params.maxSpeed * (p.overheated ? params.overheatSpeed : 1) * slow;
 
   let mvx, mvy;
   const dashing = p.dashTime > 0;
@@ -376,16 +456,34 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     }
   } else {
     const has = dir.mag > 0;
+    const grip = p.air ? params.airControl : 1; // little steering in the air
     [p.vx, p.vy] = approach(
       p.vx, p.vy,
       dir.x * topSpeed, dir.y * topSpeed,
-      (has ? params.accel : params.decel) * dt,
+      (has ? params.accel * slow : params.decel) * grip * dt,
     );
     mvx = p.vx; mvy = p.vy;
   }
 
   move(state.map, p, { vx: mvx, vy: mvy }, dt, r);
   if (p.ball) separate(state.map, p, p.ball, r + params.ballRadius, params);
+  if (!dashing) {
+    for (const c of state.cocoons) {
+      if (!c.alive || Math.abs(c.z - p.z) >= SAME_FLOOR) continue;
+      const dx = p.x - c.x, dy = p.y - c.y, d = Math.hypot(dx, dy), min = r + params.cocoonRadius;
+      if (d < min && d > 1e-9) {
+        p.x += (dx / d) * (min - d); p.y += (dy / d) * (min - d);
+        const vn = (p.vx * dx + p.vy * dy) / d;
+        if (vn < 0) { p.vx -= (vn * dx) / d; p.vy -= (vn * dy) / d; }
+        move(state.map, p, { vx: 0, vy: 0 }, 0, r);
+      }
+    }
+  }
+  const fell = settle(state.map, p, dt, params, r);
+  if (fell >= 0.5) {
+    state.events.push({ type: 'land', who: 'player', x: p.x, y: p.y, height: fell });
+    if (fell >= params.fallStunHeight) p.stun = Math.max(p.stun, params.fallStun);
+  }
 
   const reach = r + params.pickupRange;
   for (const s of state.shards) {
@@ -401,6 +499,8 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   }
 
   stepVents(state, params, dt);
+  stepCocoons(state, params, dt, dashing);
+  stepWebs(state, params, dt, dashing);
   stepSpiders(state, params, dt, dashing);
 
   if (!state.won && !state.dead) {
@@ -418,7 +518,7 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 // A spider that is free to pair up for an attack.
-const canPair = (c) => c.alive && c.mode === 'wander' && c.cooldown <= 0;
+const canPair = (c) => c.alive && c.type === 'stainer' && c.mode === 'wander' && c.cooldown <= 0;
 
 function nearestPartner(state, c, range) {
   let best = null, bestD = range;
@@ -453,6 +553,88 @@ function killSpider(state, c, dirX = state.player.dashX, dirY = state.player.das
   c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0; c.deadTime = 0;
   state.kills++;
   state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX, dirY });
+}
+
+// ---- cocoons, web turrets, webs -------------------------------------------------
+
+// Clear line between two points at height z: no wall, no ground higher than
+// z + half a level in between (sampled every quarter tile).
+export function lineOfSight(map, ax, ay, bx, by, z) {
+  const d = Math.hypot(bx - ax, by - ay), n = Math.max(1, Math.ceil(d / 0.25));
+  for (let i = 1; i < n; i++) {
+    const x = ax + ((bx - ax) * i) / n, y = ay + ((by - ay) * i) / n;
+    if (isSolid(map, Math.floor(x), Math.floor(y)) || groundLevel(map, x, y) > z + 0.5) return false;
+  }
+  return true;
+}
+
+// Each cocoon carries a turret: it turns toward the player while it can see
+// them, charges for a moment once lined up, and fires a web.
+function stepCocoons(state, params, dt, dashing) {
+  const p = state.player;
+  for (const c of state.cocoons) {
+    if (!c.alive) continue;
+    // Broken by a dash, or by a fast ball.
+    const ball = p.ball, bs = ball ? Math.hypot(ball.vx, ball.vy) : 0;
+    const byDash = dashing && Math.abs(c.z - p.z) < SAME_FLOOR && dist(c, p) < params.radius + params.cocoonRadius + params.killMargin;
+    const byBall = ball && bs >= params.ballKillSpeed && Math.abs(c.z - ball.z) < SAME_FLOOR && dist(c, ball) < params.ballRadius + params.cocoonRadius;
+    if (byDash || byBall) {
+      c.alive = false;
+      state.events.push({ type: 'cocoon', id: c.id, x: c.x, y: c.y });
+      // The spider inside drops out from above and lands on its own.
+      const top = c.z + params.spiderDrop;
+      const sp = makeSpider(state, c.x, c.y, {
+        type: 'spider', mode: 'drop', z: top, air: true, vz: 0, fallFrom: top, cooldown: 0.6,
+      });
+      state.events.push({ type: 'spiderDrop', id: sp.id, x: c.x, y: c.y });
+      continue;
+    }
+    c.reload = Math.max(0, c.reload - dt);
+    const dx = p.x - c.x, dy = p.y - c.y, d = Math.hypot(dx, dy);
+    const muzzle = c.z + 0.5;
+    c.sees = !state.dead && d <= params.turretRange && Math.abs(p.z - c.z) < 1.5
+      && lineOfSight(state.map, c.x, c.y, p.x, p.y, Math.max(c.z, p.z));
+    if (!c.sees) { c.charge = 0; continue; }
+    const want = Math.atan2(dy, dx);
+    let diff = Math.atan2(Math.sin(want - c.aim), Math.cos(want - c.aim));
+    const turn = Math.sign(diff) * Math.min(Math.abs(diff), params.turretTurn * dt);
+    c.aim += turn; diff -= turn;
+    if (c.reload > 0 || Math.abs(diff) > 0.2) { c.charge = 0; continue; }
+    c.charge += dt;
+    if (c.charge < params.turretCharge) continue;
+    const ux = Math.cos(c.aim), uy = Math.sin(c.aim);
+    state.webs.push({
+      id: state.nextId++, from: c.id, x: c.x + ux * 0.4, y: c.y + uy * 0.4, z: muzzle,
+      vx: ux * params.webSpeed, vy: uy * params.webSpeed, travel: 0, px: c.x, py: c.y,
+    });
+    state.events.push({ type: 'shoot', id: c.id, x: c.x, y: c.y });
+    c.charge = 0;
+    c.reload = params.turretReload * (0.8 + rand(state) * 0.4);
+  }
+}
+
+// Webs fly straight; they stick to walls and higher ground, drop after their
+// range, and wrap the player on contact (not during a dash).
+function stepWebs(state, params, dt, dashing) {
+  const p = state.player;
+  state.webs = state.webs.filter((w) => {
+    w.px = w.x; w.py = w.y;
+    w.x += w.vx * dt; w.y += w.vy * dt;
+    w.travel += Math.hypot(w.vx, w.vy) * dt;
+    const tx = Math.floor(w.x), ty = Math.floor(w.y);
+    if (isSolid(state.map, tx, ty) || groundLevel(state.map, w.x, w.y) > w.z) {
+      state.events.push({ type: 'webSplat', x: w.x, y: w.y, z: w.z });
+      return false;
+    }
+    if (w.travel > params.webRange) return false;
+    if (!dashing && !state.dead && Math.abs(p.z + 0.4 - w.z) < 0.9
+      && Math.hypot(w.x - p.x, w.y - p.y) < params.radius + params.webRadius) {
+      p.webbed = params.webDuration;
+      state.events.push({ type: 'webbed', x: p.x, y: p.y });
+      return false;
+    }
+    return true;
+  });
 }
 
 // ---- dung beetle: a ball with momentum ---------------------------------------
@@ -507,15 +689,19 @@ function stepBall(state, dir, params, dt, topSpeed) {
     const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy) || 1;
     const align = (dx / d) * (dir.x / dir.mag) + (dy / d) * (dir.y / dir.mag);
     if (align > 0.6) {
-      b.vx += (dx / d) * params.ballPush * dir.mag * dt;
-      b.vy += (dy / d) * params.ballPush * dir.mag * dt;
-      const s2 = Math.hypot(b.vx, b.vy), cap = params.ballMax * (p.overheated ? params.overheatSpeed : 1);
+      const slow = p.webbed > 0 ? params.webSlow : 1;
+      b.vx += (dx / d) * params.ballPush * slow * dir.mag * dt;
+      b.vy += (dy / d) * params.ballPush * slow * dir.mag * dt;
+      const s2 = Math.hypot(b.vx, b.vy), cap = params.ballMax * (p.overheated ? params.overheatSpeed : 1) * slow;
       if (s2 > cap) { b.vx *= cap / s2; b.vy *= cap / s2; }
     }
   }
   // Roll; a wall contact reflects the blocked part of the velocity.
+  b.pz = b.z;
   const before = { vx: b.vx, vy: b.vy };
   move(map, b, b, dt, params.ballRadius);
+  const ballFell = settle(map, b, dt, params, params.ballRadius);
+  if (ballFell >= 0.5) state.events.push({ type: 'land', who: 'ball', x: b.x, y: b.y, height: ballFell });
   b.vx -= params.ballBounce * (before.vx - b.vx);
   b.vy -= params.ballBounce * (before.vy - b.vy);
   // The beetle heads for the spot behind the ball.
@@ -542,7 +728,7 @@ function stepVents(state, params, dt) {
   for (const v of state.vents) {
     v.timer -= dt;
     if (v.timer > 0) continue;
-    const alive = state.critters.filter((c) => c.alive).length;
+    const alive = state.critters.filter((c) => c.alive && c.type === 'stainer').length;
     if (alive >= params.maxSpiders || dist(v, p) < params.ventSafe) { v.timer = 1; continue; }
     const c = makeSpider(state, v.x, v.y, {
       mode: 'emerge', stateTime: params.emergeTime, stateTotal: params.emergeTime,
@@ -554,7 +740,48 @@ function stepVents(state, params, dt) {
   }
 }
 
-// Spiders: alone they wander, flee, or walk to a partner. Two free spiders
+// Spider from a cocoon: drops, then hunts alone. Stalks toward the player,
+// winds up briefly when close, lunges, recovers. Returns the wanted velocity.
+function spiderBrain(state, c, params, dt, dx, dy, d) {
+  const p = state.player;
+  const sameFloor = Math.abs(c.z - p.z) < SAME_FLOOR;
+  if (c.mode === 'drop') {
+    if (!c.air) { c.mode = 'stalk'; c.timer = 0; }
+    return [c.vx, c.vy, 0];
+  }
+  if (c.mode === 'swindup') {
+    c.dirX = -dx / d; c.dirY = -dy / d;
+    c.stateTime -= dt;
+    if (c.stateTime <= 0) {
+      c.mode = 'slunge'; c.stateTime = params.spiderLungeTime; c.hitDone = false;
+      c.lungeX = c.dirX; c.lungeY = c.dirY;
+    }
+    return [0, 0, params.critterAccel];
+  }
+  if (c.mode === 'slunge') {
+    c.vx = c.lungeX * params.spiderLungeSpeed; c.vy = c.lungeY * params.spiderLungeSpeed;
+    c.stateTime -= dt;
+    if (c.stateTime <= 0) { c.mode = 'stalk'; c.cooldown = params.spiderCooldown; }
+    return [c.vx, c.vy, Infinity];
+  }
+  // Stalking.
+  if (!state.dead && sameFloor && d < params.spiderLungeRange && c.cooldown <= 0) {
+    c.mode = 'swindup'; c.stateTime = params.spiderWindup; c.stateTotal = params.spiderWindup;
+    return [0, 0, params.critterAccel];
+  }
+  if (!state.dead && d < params.spiderAggro) {
+    c.dirX = -dx / d; c.dirY = -dy / d;
+    return [c.dirX * params.spiderSpeed, c.dirY * params.spiderSpeed, params.critterAccel];
+  }
+  c.timer -= dt;
+  if (c.timer <= 0) {
+    const a = rand(state) * Math.PI * 2;
+    c.dirX = Math.cos(a); c.dirY = Math.sin(a); c.timer = 1.5 + rand(state) * 1.5;
+  }
+  return [c.dirX * params.critterSpeed, c.dirY * params.critterSpeed, params.critterAccel];
+}
+
+// Cotton stainers: alone they wander, flee, or walk to a partner. Two free spiders
 // standing next to each other near the player wind up together, lunge, and
 // are thrown apart afterwards, then can't pair again for attackCooldown.
 // A dashing player kills any spider it touches.
@@ -562,7 +789,7 @@ function stepSpiders(state, params, dt, dashing) {
   const p = state.player;
   const contact = params.radius + params.critterRadius;
   for (const c of state.critters) {
-    c.px = c.x; c.py = c.y;
+    c.px = c.x; c.py = c.y; c.pz = c.z;
     if (!c.alive) { c.deadTime += dt; continue; }
     c.cooldown = Math.max(0, c.cooldown - dt);
   }
@@ -590,7 +817,9 @@ function stepSpiders(state, params, dt, dashing) {
     const d = Math.hypot(dx, dy) || 1;
     let tx = 0, ty = 0, accel = params.critterAccel;
 
-    if (c.mode === 'emerge') {
+    if (c.type === 'spider') {
+      [tx, ty, accel] = spiderBrain(state, c, params, dt, dx, dy, d);
+    } else if (c.mode === 'emerge') {
       c.stateTime -= dt;
       if (c.stateTime <= 0) { c.mode = 'wander'; c.cooldown = params.spawnCooldown; c.timer = 0; }
     } else if (c.mode === 'windup') {
@@ -652,12 +881,14 @@ function stepSpiders(state, params, dt, dashing) {
       }
     }
 
-    if (c.mode !== 'lunge') {
-      if (c.mode === 'windup' || c.mode === 'thrown' || c.mode === 'emerge') { tx = 0; ty = 0; }
-      [c.vx, c.vy] = approach(c.vx, c.vy, tx, ty, accel * dt);
+    if (c.mode !== 'lunge' && c.mode !== 'slunge') {
+      if (c.mode === 'windup' || c.mode === 'thrown' || c.mode === 'emerge' || c.mode === 'swindup') { tx = 0; ty = 0; }
+      [c.vx, c.vy] = approach(c.vx, c.vy, tx, ty, accel * dt * (c.air ? params.airControl : 1));
     }
     const want = Math.hypot(c.vx, c.vy);
     move(state.map, c, { vx: c.vx, vy: c.vy }, dt, params.critterRadius);
+    const cFell = settle(state.map, c, dt, params, params.critterRadius);
+    if (cFell >= 0.5) state.events.push({ type: 'land', who: c.id, x: c.x, y: c.y, height: cFell });
     // Pressed against a wall while wandering: pick a new direction next step.
     if (c.mode === 'wander' && want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
 
@@ -670,7 +901,7 @@ function stepSpiders(state, params, dt, dashing) {
         killSpider(state, c, b.vx / bs, b.vy / bs); continue;
       }
     }
-    if (c.mode === 'lunge' && !c.hitDone && sameFloor && dist(c, p) < contact + 0.05) {
+    if ((c.mode === 'lunge' || c.mode === 'slunge') && !c.hitDone && sameFloor && dist(c, p) < contact + 0.05) {
       c.hitDone = true;
       hitPlayer(state, c, params);
     }
@@ -686,7 +917,7 @@ export function wallClearance(state, r, p = state.player) {
     for (let tx = ox - 2; tx <= ox + 2; tx++) {
       const cx = Math.min(Math.max(p.x, tx), tx + 1);
       const cy = Math.min(Math.max(p.y, ty), ty + 1);
-      if (!blocks(state.map, ox, oy, tx, ty, cx, cy)) continue;
+      if (!blocks(state.map, p, tx, ty, cx, cy)) continue;
       const inside = p.x > tx && p.x < tx + 1 && p.y > ty && p.y < ty + 1;
       const d = inside ? -1 : Math.hypot(p.x - cx, p.y - cy);
       best = Math.min(best, d - r);

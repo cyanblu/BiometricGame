@@ -31,6 +31,14 @@ export const SPIDER_RIG = {
   stepThreshold: 0.22, stepTime: 0.05, stepHeight: 0.16,
 };
 
+// Cotton stainers: six legs, low flat body, quick short steps.
+export const STAINER_RIG = {
+  ...RIG_DEFAULTS, legs: 6, scale: 0.6,
+  bodyF: 4, bodyZeta: 0.8, bodyR: 0, headF: 3,
+  bodyHeight: 0.14, hipSide: 0.07, hipAlong: 0.12, footSide: 0.4, footAlong: 0.28,
+  thigh: 0.3, shin: 0.38, stepThreshold: 0.2, stepTime: 0.045, stepLead: 0.6, stepHeight: 0.12, neck: 0.3,
+};
+
 // Leg layouts. Neighbouring legs on a side, and the same leg across the
 // body, are always in different groups, so the body stays supported.
 const LEG_LAYOUT_6 = [
@@ -64,6 +72,10 @@ export function createRig(x, y, heading = Math.PI / 4, opts = RIG_DEFAULTS) {
     head: createFollower([x, y], ...m.head),
     targetHeading: heading,
     pos: { x, y }, heading, headPos: { x, y },
+    // Vertical body spring: a landing kicks it down, it bounces back.
+    bob: createFollower(0, 4, 0.35, 0),
+    bodyDip: 0,
+    air: false,
     legs: (opts.legs === 8 ? LEG_LAYOUT_8 : opts.legs === 4 ? LEG_LAYOUT_4 : LEG_LAYOUT_6).map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
     vel: { x: 0, y: 0 },
     time: 0,
@@ -88,7 +100,7 @@ function frame(rig) {
 export function hipOf(rig, leg) {
   const o = rig.opts, k = o.scale, F = frame(rig);
   const a = leg.along * o.hipAlong * k, sd = leg.side * o.hipSide * k;
-  return { x: rig.pos.x + F.fx * a + F.rx * sd, y: rig.pos.y + F.fy * a + F.ry * sd, z: o.bodyHeight * k };
+  return { x: rig.pos.x + F.fx * a + F.rx * sd, y: rig.pos.y + F.fy * a + F.ry * sd, z: o.bodyHeight * k + rig.bodyDip };
 }
 
 function restOf(rig, leg) {
@@ -128,11 +140,18 @@ export function snapRig(rig, x, y, heading = rig.heading, blocked) {
   placeFeet(rig, blocked);
 }
 
-// target: simulated position and velocity. blocked(x, y): true on walls.
+// A landing from `height` levels: the body squashes down and springs back.
+export function landRig(rig, height) {
+  rig.bob.yd[0] = Math.min(rig.bob.yd[0], -Math.min(2, 0.6 + height * 0.5) * rig.opts.scale);
+}
+
+// target: simulated position, velocity and `air` (falling). blocked(x, y):
+// true where a foot may not land.
 export function updateRig(rig, dt, target, blocked) {
   if (dt <= 0) return rig;
   const o = rig.opts;
   rig.time += dt;
+  rig.bodyDip = Math.min(0.1 * o.scale, follow(rig.bob, dt, 0));
   const prev = rig.pos;
   const [bx, by] = follow(rig.body, dt, [target.x, target.y]);
   rig.pos = { x: bx, y: by };
@@ -152,6 +171,24 @@ export function updateRig(rig, dt, target, blocked) {
   const neck = (o.neck ?? 0.27) * o.scale;
   const [hx, hy] = follow(rig.head, dt, [bx + F.fx * neck, by + F.fy * neck]);
   rig.headPos = { x: hx, y: hy };
+
+  // Falling: legs splay out and flail; nothing is planted.
+  if (target.air) {
+    rig.air = true;
+    rig.legs.forEach((leg, i) => {
+      const r = restOf(rig, leg);
+      const out = 1.15, wig = Math.sin(rig.time * 19 + i * 1.7) * 0.06 * o.scale;
+      leg.foot = { x: rig.pos.x + (r.x - rig.pos.x) * out + wig, y: rig.pos.y + (r.y - rig.pos.y) * out - wig };
+      leg.lift = o.bodyHeight * o.scale * 0.55 + Math.cos(rig.time * 23 + i) * 0.04 * o.scale;
+      leg.t = 1;
+    });
+    return rig;
+  }
+  if (rig.air) {
+    // Just landed: put the feet down where they are.
+    rig.air = false;
+    for (const leg of rig.legs) { leg.lift = 0; leg.from = { ...leg.foot }; }
+  }
 
   // Snap feet that fell hopelessly behind (respawn, very long frame).
   const snap = (o.thigh + o.shin) * o.scale * 2.5;

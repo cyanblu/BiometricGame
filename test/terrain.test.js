@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createState, step, DEFAULT_PARAMS as P, STEP, worldToScreen, groundLevel, edgeOpen, isSolid, wallClearance,
+  createState, step, DEFAULT_PARAMS as P, STEP, worldToScreen, groundLevel, edgeOpen, canPass, isSolid, wallClearance,
 } from '../src/sim.js';
 import { LEVELS } from '../src/levels.js';
 
@@ -39,13 +39,14 @@ test('walking up a ramp (and stairs) reaches the upper level, height changes smo
   for (const lvl of [hill, stairs]) {
     const s = at(createState(lvl), 1.5, 2.5);
     let prevZ = s.player.z, worst = 0;
-    for (let i = 0; i < 90; i++) {
+    while (s.player.x < 5.2 && s.time < 3) {
       step(s, toward(1, 0), P);
       worst = Math.max(worst, Math.abs(s.player.z - prevZ));
       prevZ = s.player.z;
     }
-    assert.ok(s.player.x > 4.5, `got to x=${s.player.x.toFixed(2)}`);
+    assert.ok(s.player.x >= 5.2, `got to x=${s.player.x.toFixed(2)}`);
     assert.equal(s.player.z, 1);
+    assert.equal(s.player.air, false);
     assert.ok(worst <= P.maxSpeed * STEP + 1e-9, `height jumped by ${worst}`);
   }
 });
@@ -57,16 +58,55 @@ test('and back down again', () => {
   assert.equal(s.player.z, 0);
 });
 
-test('cliffs block both ways: no climbing up, no stepping off', () => {
+test('cliffs: you cannot walk up one', () => {
   const up = at(createState(hill), 5.5, 1.5);
   run(up, toward(0, 1), 1);
   assert.ok(up.player.y <= 2 - P.radius + 1e-9, `climbed to y=${up.player.y.toFixed(2)}`);
   assert.equal(up.player.z, 0);
+});
 
-  const off = at(createState(hill), 5.5, 2.5);
-  run(off, toward(0, -1), 1);
-  assert.ok(off.player.y >= 2 + P.radius - 1e-9, `stepped off to y=${off.player.y.toFixed(2)}`);
-  assert.equal(off.player.z, 1);
+test('ledges: you can step off, fall with gravity and land on the lower floor', () => {
+  const s = at(createState(hill), 5.5, 2.5);
+  let maxDrop = 0, airborneSteps = 0, prevZ = s.player.z;
+  for (let i = 0; i < 60; i++) {
+    step(s, toward(0, -1), P);
+    if (s.player.air) airborneSteps++;
+    maxDrop = Math.max(maxDrop, prevZ - s.player.z);
+    prevZ = s.player.z;
+  }
+  assert.ok(s.player.y < 2 - P.radius, `walked off to y=${s.player.y.toFixed(2)}`);
+  assert.equal(s.player.z, 0);
+  assert.equal(s.player.air, false);
+  // Falling one level takes sqrt(2 / gravity) seconds; it is not instant.
+  const fallSteps = Math.sqrt(2 / P.gravity) / STEP;
+  assert.ok(airborneSteps >= fallSteps - 2, `in the air for ${airborneSteps} steps`);
+  assert.ok(maxDrop < 0.5, `dropped ${maxDrop.toFixed(2)} in one step`);
+  const land = s.events.find((e) => e.type === 'land');
+  assert.ok(land && Math.abs(land.height - 1) < 1e-6, 'landing reported with its height');
+});
+
+test('a big fall stuns briefly; a small one does not', () => {
+  const deep = { ...hill, heights: hill.heights.map((r, y) => (y === 2 || y === 3 ? r.replace(/1/g, '2') : r)) };
+  // Drop 2 levels off the north edge.
+  const s = at(createState(deep), 5.5, 2.5);
+  let stunned = false;
+  for (let i = 0; i < 60; i++) { step(s, toward(0, -1), P); stunned ||= s.player.stun > 0; }
+  assert.ok(stunned, 'stunned after dropping 2 levels');
+  const t = at(createState(hill), 5.5, 2.5);
+  let stunned1 = false;
+  for (let i = 0; i < 60; i++) { step(t, toward(0, -1), P); stunned1 ||= t.player.stun > 0; }
+  assert.equal(stunned1, false);
+});
+
+test('in the air you keep your momentum and steer only a little', () => {
+  const s = at(createState(hill), 5.5, 2.5);
+  run(s, toward(0, -1), 0.2); // run off the edge
+  while (!s.player.air && s.time < 1) step(s, toward(0, -1), P);
+  assert.ok(s.player.air);
+  const vy = s.player.vy;
+  step(s, toward(0, 1), P); // try to turn back
+  assert.ok(s.player.vy < 0, 'still moving away from the ledge');
+  assert.ok(Math.abs(s.player.vy - vy) <= P.accel * P.airControl * STEP + 1e-9);
 });
 
 test('a ramp cannot be entered from the side where it is already high', () => {
@@ -75,7 +115,7 @@ test('a ramp cannot be entered from the side where it is already high', () => {
   assert.ok(s.player.y <= 2 - P.radius + 1e-9, `y=${s.player.y.toFixed(2)}`);
 });
 
-test('a dash cannot jump a cliff', () => {
+test('a dash cannot go up a cliff', () => {
   const s = at(createState(hill), 5.5, 1.5);
   s.player.faceX = 0; s.player.faceY = 1;
   step(s, { dash: true }, P);
@@ -124,12 +164,34 @@ test('arena: every battery and vent can be reached from the spawn', () => {
     const [x, y] = queue.shift();
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const n = [x + dx, y + dy];
-      if (seen.has(n.join()) || !edgeOpen(m, x, y, ...n)) continue;
+      if (seen.has(n.join()) || !canPass(m, x, y, ...n)) continue;
       seen.add(n.join()); queue.push(n);
     }
   }
-  for (const c of [...s.shards, ...s.vents]) {
+  assert.ok(s.cocoons.length >= 3, 'cocoons placed');
+  for (const c of [...s.shards, ...s.vents, ...s.cocoons]) {
     assert.ok(seen.has(`${Math.floor(c.x)},${Math.floor(c.y)}`), `unreachable at ${c.x},${c.y}`);
   }
   assert.ok(!isSolid(m, ...start));
+});
+
+test('arena: no dead ends: from every reachable tile you can get back to the spawn', () => {
+  const s = createState(LEVELS[0]);
+  const m = s.map;
+  const key = (x, y) => `${x},${y}`;
+  const start = [Math.floor(m.spawn.x), Math.floor(m.spawn.y)];
+  const flood = (from, step) => {
+    const seen = new Set([key(...from)]), q = [from];
+    while (q.length) {
+      const [x, y] = q.shift();
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const n = [x + dx, y + dy];
+        if (!seen.has(key(...n)) && step(x, y, ...n)) { seen.add(key(...n)); q.push(n); }
+      }
+    }
+    return seen;
+  };
+  const forward = flood(start, (ax, ay, bx, by) => canPass(m, ax, ay, bx, by));
+  const back = flood(start, (ax, ay, bx, by) => canPass(m, bx, by, ax, ay)); // tiles that can reach the spawn
+  for (const t of forward) assert.ok(back.has(t), `stuck at ${t}`);
 });

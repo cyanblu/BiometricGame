@@ -10,7 +10,8 @@ export const VITALS_H = 52;
 const VC = COLORS;
 
 export function createVitals(canvas) {
-  canvas.width = VITALS_W;
+  let W = VITALS_W; // grows for bugs with more health than ten
+  canvas.width = W;
   canvas.height = VITALS_H;
   const g = canvas.getContext('2d', { willReadFrequently: true });
   const lut = buildLut();
@@ -45,18 +46,18 @@ export function createVitals(canvas) {
     // Ribbed slab behind spine and pods, with teeth along both edges.
     g.beginPath();
     g.moveTo(26, 6);
-    for (let x = 26; x < 162; x += 6.5) { g.lineTo(x + 2, 6); g.lineTo(x + 3.5, 3.5); g.lineTo(x + 5, 6); }
-    g.quadraticCurveTo(168, 6, 167, 26);
-    g.quadraticCurveTo(168, 47, 160, 47);
-    for (let x = 160; x > 26; x -= 6.5) { g.lineTo(x - 2, 47); g.lineTo(x - 3.5, 49.5); g.lineTo(x - 5, 47); }
+    for (let x = 26; x < W - 6; x += 6.5) { g.lineTo(x + 2, 6); g.lineTo(x + 3.5, 3.5); g.lineTo(x + 5, 6); }
+    g.quadraticCurveTo(W, 6, W - 1, 26);
+    g.quadraticCurveTo(W, 47, W - 8, 47);
+    for (let x = W - 8; x > 26; x -= 6.5) { g.lineTo(x - 2, 47); g.lineTo(x - 3.5, 49.5); g.lineTo(x - 5, 47); }
     g.closePath();
     g.fillStyle = lin(0, 4, 0, 50, [[0, VC.void2], [0.45, VC.void1], [1, VC.void0]]);
     g.fill();
     g.save(); g.clip();
-    halftone(26, 4, 142, 46, VC.metal0, (x, y) => 0.9 - Math.abs(y - 26) / 26 - (x - 26) / 400);
+    halftone(26, 4, W - 26, 46, VC.metal0, (x, y) => 0.9 - Math.abs(y - 26) / 26 - (x - 26) / 400);
     // Grooves between the rows.
-    g.fillStyle = VC.void0; g.fillRect(26, 27, 142, 1);
-    g.fillStyle = VC.metal1; g.fillRect(26, 28, 142, 1);
+    g.fillStyle = VC.void0; g.fillRect(26, 27, W - 26, 1);
+    g.fillStyle = VC.metal1; g.fillRect(26, 28, W - 26, 1);
     g.restore();
     g.strokeStyle = VC.metal1; g.lineWidth = 1; g.stroke();
   }
@@ -203,10 +204,15 @@ export function createVitals(canvas) {
 
   // v: { health, maxHealth, charges, maxCharges, bpm, overheated, flash (s), t }
   function draw(v) {
-    g.clearRect(0, 0, VITALS_W, VITALS_H);
+    const want = Math.max(VITALS_W, X0 + Math.max(v.maxHealth, Math.ceil(v.maxCharges / 3)) * STEP + 2);
+    if (want !== W) {
+      W = want; canvas.width = W;
+      canvas.style.setProperty('--vw', String(W));
+    }
+    g.clearRect(0, 0, W, VITALS_H);
     backplate();
-    cord(SPINE_Y, X0 - 4, 164);
-    cord(POD_Y + 19, X0 - 4, 164);
+    cord(SPINE_Y, X0 - 4, W - 4);
+    cord(POD_Y + 19, X0 - 4, W - 4);
     const low = v.health <= 3;
     for (let i = 0; i < v.maxHealth; i++) {
       vertebra(X0 + i * STEP, i < v.health, v.flash > 0 && i < v.health, v.t, i, low);
@@ -217,10 +223,10 @@ export function createVitals(canvas) {
     }
     organ(v.t, v.bpm, v.charges, v.overheated);
     // Snap to the game palette with ordered dither; keep the outline crisp.
-    const img = g.getImageData(0, 0, VITALS_W, VITALS_H);
-    const alpha = new Uint8Array(VITALS_W * VITALS_H);
+    const img = g.getImageData(0, 0, W, VITALS_H);
+    const alpha = new Uint8Array(W * VITALS_H);
     for (let i = 0; i < alpha.length; i++) alpha[i] = img.data[i * 4 + 3];
-    quantize(img.data, VITALS_W, VITALS_H, lut, 14);
+    quantize(img.data, W, VITALS_H, lut, 14);
     for (let i = 0; i < alpha.length; i++) img.data[i * 4 + 3] = alpha[i] >= 128 ? 255 : 0;
     g.putImageData(img, 0, 0);
   }

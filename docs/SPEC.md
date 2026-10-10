@@ -1,4 +1,4 @@
-# Biometric behaviour spec (v0.7)
+# Biometric behaviour spec (v0.8)
 
 Premise: you control a small mechanical bug in a world of living bugs. The
 bug's vital signs (biometrics) are part of play and show up in how it moves.
@@ -76,18 +76,32 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
    A slope starts at the level of the tile on its low side and rises by one
    level across the tile. Stairs move exactly like ramps; only the look differs.
 2. Height is continuous on slopes: walking up one changes height smoothly.
-3. Cliffs block both ways: no climbing up, no stepping or dashing off a ledge.
-   Levels only connect through ramps and stairs. A slope's sides are cliffs
-   except where the heights happen to match.
+3. You can't walk or dash **up** a cliff; up only goes by ramps and stairs.
+   You **can** step, run or dash **off** a ledge (or off the side of a slope)
+   and fall to the floor below. This applies to every entity: player,
+   stainers, spiders and the dung ball.
 4. Rule: an entity touching another tile at point *c* is blocked when that
-   tile is a wall, or when the two tiles' surface heights at *c* differ by
-   more than 0.12. Comparing at the contact point (not at the entity's centre)
-   is what lets a 0.3-radius body step off the top of a ramp.
-5. Batteries, spider hits and dash kills only count within 0.5 levels.
-6. Bugs' feet land on the ground under them (they reach down steps), never on
+   tile is a wall, or when that tile's surface at *c* is more than 0.12 levels
+   higher than the entity. On the ground "the entity's height" is its own
+   tile's surface at *c* (which lets a 0.3-radius body leave the top of a
+   ramp); in the air, or once its centre is past the edge, it is its height.
+5. Falling: past a drop of more than 0.15 levels (more than walking down a
+   ramp), the entity is airborne. Gravity 30 levels/s² (one level takes
+   about 0.26 s). In the air the player keeps its momentum and has 35 % of
+   its acceleration for steering; dashing still works. After a fall the
+   entity is pushed off any cliff face it ended up beside.
+6. Landing from 0.5 levels or more reports a `land` event (dust, body squash).
+   Landing from 1.5 levels or more stuns the player for 0.25 s.
+7. Animation: in the air legs splay and flail, the body hangs on its spring;
+   the shadow stays on the floor below, shrinking with height; landing kicks
+   the body's vertical spring (it dips and bounces back). Camera follows the
+   real height.
+8. Batteries, hits and dash kills only count within 0.5 levels.
+9. Bugs' feet land on the ground under them (they reach down steps), never on
    ground more than 0.6 levels away from the body.
-7. Tested: every slope's low and high side are open, the arena uses at least
-   three levels, and every battery and vent is reachable from the spawn.
+10. Tested: every slope's low and high side are open, the arena uses at least
+    three levels, every battery, vent and cocoon is reachable from the spawn,
+    and from every reachable tile you can get back to the spawn (no traps).
 
 ### Collision
 
@@ -102,9 +116,17 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
 
 Chosen in a separate menu that opens first (and with `C` or the Bug button;
 choosing restarts the run). Data in `src/characters.js`. Every bug carries
-the same biometric implant (heartbeat light, pulse, heat) and, except the
-dung beetle, the same gameplay numbers; the motion preset changes how its
-body moves, not what it can do.
+the same biometric implant (heartbeat light, pulse, heat). The cards show
+speed, health and dash-distance bars and a one-line special.
+
+| Bug | Top speed | Health | Dash (speed × time) | Other |
+|---|---|---|---|---|
+| Cowboy beetle | 4.5 | 10 | 13 × 0.14 | baseline |
+| Stag beetle | 3.6 (accel 18) | 14 | 11 × 0.14 | knockback 3, radius 0.34, dash heat 0.4 |
+| Jumping spider | 5.2 (accel 60) | 7 | 16 × 0.16 | dash cooldown 0.4, radius 0.27 |
+| Daddy longlegs | 5.4 (accel 14, decel 9) | 8 | 13 × 0.14 | no fall stun, webs slow to 75 % for 1.2 s, radius 0.24 |
+| Praying mantis | 4.2 | 9 | 14 × 0.14 | dash kill reach 0.45 |
+| Dung beetle | 4 | 12 | (kicks the ball) | ball mechanics |
 
 | Bug | Motion preset (f / ζ / r) | Legs | Look |
 |---|---|---|---|
@@ -115,7 +137,8 @@ body moves, not what it can do.
 | Praying mantis (*Mantis religiosa*, Gottesanbeterin) | Robot 2 / 0.5 / −2 | 4 | long green body, folded raptorial arms |
 | Dung beetle (*Scarabaeus sacer*, Pillendreher) | own: 3 / 0.7 / 0.5 | 6 | glossy black, shovel head, pushes a ball |
 
-Tested: each preset belongs to exactly one bug; every bug's gait keeps at
+Tested: each preset belongs to exactly one bug; no two bugs share their
+stats; the stated strengths and weaknesses hold; every bug's gait keeps at
 least half its feet down and its feet within reach at walking and top speed.
 
 ### Dung beetle: the ball
@@ -207,7 +230,12 @@ blow up or jitter.
 6. Presets in the panel: Default, Robot (2 / 0.5 / −2, from the
    procedural-animation video), Snappy, Springy, Heavy.
 
-## Spiders
+## Cotton stainers
+
+(The vent enemies; `type: 'stainer'` in the code, formerly "spiders".)
+Drawn as *Dysdercus*: flat red oval with pale seams, black triangle, black
+wing spots and membrane tip, long black antennae, six black legs, a faint
+red glow of their own so the warning colours read in the dark.
 
 | Property | Default | Unit |
 |---|---|---|
@@ -287,10 +315,58 @@ blow up or jitter.
 4. Dead spiders are removed after 12 s; the renderer leaves their husk on the
    floor.
 
+## Cocoons and web turrets
+
+| Property | Default | Unit |
+|---|---|---|
+| Cocoon radius | 0.32 | tiles |
+| Turret range | 7 | tiles |
+| Turret turn speed | 3 | rad/s |
+| Wind-up before a shot | 0.45 | s |
+| Reload | 2.6 × 0.8–1.2 | s |
+| Web speed / radius / range | 6.5 / 0.18 / 9 | tiles/s, tiles, tiles |
+| Web slowdown | speed and acceleration × 0.45 for 2.5 s | |
+
+1. Cocoons (`O` in the map) are silk egg sacs with a riveted turret collar.
+   They are solid: you can't walk through one.
+2. The turret sees you within 7 tiles, within 1.5 levels, with a clear line
+   (no wall, no ground higher than half a level above the line). It turns
+   toward you; once lined up (within 0.2 rad) and reloaded it charges for
+   0.45 s (the barrel glows), then fires. Its eye glows red while it sees you.
+3. A web flies straight, trailing a silk thread back to its turret. It sticks
+   to walls and higher ground (and stays there a few seconds) and drops after
+   9 tiles.
+4. A hit wraps you in a web: speed and acceleration × 0.45 for 2.5 s (the
+   dung beetle pushes its ball at × 0.45 too). The net is drawn round the bug,
+   strung from its body to its feet and the ground, trembling as it moves;
+   when it wears off it fades out over 0.6 s.
+5. Starting a dash tears the web (the net bursts apart and fades in 0.25 s).
+   Webs do not stick to you during a dash.
+6. A dash (or a ball at squash speed) breaks a cocoon: it bursts, leaving a
+   torn husk, and a spider drops out from 1.4 levels above it and lands.
+
+## Spiders (from cocoons)
+
+| Property | Default | Unit |
+|---|---|---|
+| Stalk speed | 2.6 | tiles/s |
+| Notices you within | 8 | tiles |
+| Lunge from / wind-up | 1.6 / 0.3 | tiles, s |
+| Lunge speed / time | 7.5 / 0.28 | tiles/s, s |
+| Cooldown after a lunge | 1.6 | s |
+
+1. A black widow (glossy black, red hourglass). It hunts alone: no pairs.
+2. Stalks straight toward you, winds up briefly when close and on your
+   floor, lunges, recovers. Same hit as a stainer (1 health, heat, knockback).
+3. Killed by a dash or a fast ball, like stainers. Vents don't count spiders
+   toward their limit of 8.
+
 ## Events
 
 The simulation appends events to `state.events` (`spawn`, `kill` with the dash
-direction, `hit`, `pickup`, `corpse`, `death`, `win`). The browser drains them
+direction, `hit`, `pickup`, `corpse`, `death`, `win`, `land` with height,
+`kick`, `shoot`, `webbed`, `webTorn`, `webFree`, `webSplat`, `cocoon`,
+`spiderDrop`). The browser drains them
 each frame for effects. Simulation logic never reads them.
 
 ## HUD: vitals panel
@@ -350,6 +426,6 @@ Blood stays on the floor it was spilled on.
 ## Not decided yet
 
 - Whether killing spiders matters for winning (it doesn't yet).
-- Whether the other bugs should differ in gameplay too (speed, size, dash).
+- Fall damage (falls only stun for now).
 - Health pickups or regeneration (none yet).
 - Art direction beyond placeholder shapes.

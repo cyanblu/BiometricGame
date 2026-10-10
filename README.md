@@ -5,8 +5,10 @@ beetle, stag beetle, jumping spider, daddy longlegs, praying mantis, or a dung
 beetle with a ball that has momentum). You are a small biomechanical bug
 in a rain-soaked industrial ruin: collect every battery as fast as you can.
 Each dash burns a charge (start 10, max 30); small cells give 3, big red
-batteries 9. The yard has several levels joined by ramps and stairs.
-Spiders crawl out of vents and only attack in pairs; dash
+batteries 9. The yard has several levels joined by ramps and stairs, and
+you can drop off any ledge. Cotton stainers crawl out of vents and only
+attack in pairs; cocoon turrets shoot slowing webs and break open into
+spiders; dash
 through them to kill them. You have 10 health. Hits and dashes heat your
 core; overheat and you lose your dash and slow to a crawl.
 Bodies and legs are animated procedurally (second-order f/ζ/r motion plus

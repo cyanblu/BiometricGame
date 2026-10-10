@@ -145,3 +145,49 @@ test('each motion preset maps to exactly one bug', async () => {
   for (const p of ['Default', 'Heavy', 'Springy', 'Snappy', 'Robot']) assert.equal(presets.filter((x) => x === p).length, 1, p);
   assert.equal(CHARACTERS.filter((c) => c.params.mech === 'ball').length, 1);
 });
+
+test('bugs have different stats, and the stats do what they say', async () => {
+  const { CHARACTERS } = await import('../src/characters.js');
+  const { createState, step, DEFAULT_PARAMS } = await import('../src/sim.js');
+  const by = Object.fromEntries(CHARACTERS.map((c) => [c.id, { ...DEFAULT_PARAMS, ...c.params }]));
+  assert.ok(by.stag.maxHealth > by.cowboy.maxHealth && by.stag.maxSpeed < by.cowboy.maxSpeed, 'stag: tougher, slower');
+  assert.ok(by.jumper.maxSpeed > by.cowboy.maxSpeed && by.jumper.maxHealth < by.cowboy.maxHealth, 'jumper: faster, fragile');
+  assert.ok(by.jumper.dashSpeed * by.jumper.dashDuration > by.cowboy.dashSpeed * by.cowboy.dashDuration, 'jumper: longer dash');
+  assert.ok(by.mantis.killMargin > by.cowboy.killMargin, 'mantis: longer reach');
+  assert.ok(by.harvestman.webSlow > by.cowboy.webSlow, 'harvestman: resists webs');
+  const keys = new Set(CHARACTERS.map((c) => JSON.stringify(c.params)));
+  assert.equal(keys.size, CHARACTERS.length, 'no two bugs share their stats');
+  // The game starts each bug with its own health.
+  for (const c of CHARACTERS) {
+    const s = createState({ name: 't', map: ['#####', '#.P.#', '#####'] }, 1, by[c.id]);
+    step(s, {}, by[c.id]);
+    assert.equal(s.player.health, by[c.id].maxHealth, c.id);
+  }
+});
+
+test('falling: feet leave the ground and splay; landing squashes the body, then it recovers', async () => {
+  const { landRig } = await import('../src/bug.js');
+  const rig = createRig(0, 0, 0, RIG_DEFAULTS);
+  for (let i = 0; i < 30; i++) updateRig(rig, 1 / 60, { x: 0, y: 0, vx: 0, vy: 0 });
+  for (let i = 0; i < 10; i++) updateRig(rig, 1 / 60, { x: 0, y: 0, vx: 0, vy: 0, air: true });
+  assert.ok(rig.air);
+  assert.ok(rig.legs.every((l) => l.lift > 0.05), 'feet off the ground');
+  updateRig(rig, 1 / 60, { x: 0, y: 0, vx: 0, vy: 0 });
+  assert.equal(rig.air, false);
+  assert.ok(rig.legs.every((l) => l.lift === 0), 'feet down on landing');
+  landRig(rig, 2);
+  let lowest = 0;
+  for (let i = 0; i < 20; i++) { updateRig(rig, 1 / 60, { x: 0, y: 0, vx: 0, vy: 0 }); lowest = Math.min(lowest, rig.bodyDip); }
+  assert.ok(lowest < -0.03, `body dipped ${lowest.toFixed(3)}`);
+  for (let i = 0; i < 180; i++) updateRig(rig, 1 / 60, { x: 0, y: 0, vx: 0, vy: 0 });
+  assert.ok(Math.abs(rig.bodyDip) < 0.005, 'and springs back');
+});
+
+test('cotton stainer rig: tripod gait, feet within reach up to lunge speed', async () => {
+  const { STAINER_RIG } = await import('../src/bug.js');
+  for (const speed of [1.1, 3.2, 6.5]) {
+    const g = walk(speed, 6, 1 / 60, STAINER_RIG);
+    assert.ok(g.maxAir <= 3, `speed ${speed}: ${g.maxAir} in the air`);
+    assert.ok(g.overReachShare < 0.05, `speed ${speed}: over reach ${(g.overReachShare * 100).toFixed(1)}%`);
+  }
+});

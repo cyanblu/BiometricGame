@@ -56,7 +56,7 @@ body {
   position: fixed; left: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
   display: grid; gap: 2px; pointer-events: none;
 }
-#vitals { width: calc(168px * var(--vs)); height: calc(52px * var(--vs)); image-rendering: pixelated; display: block; }
+#vitals { --vw: 168; width: calc(var(--vw) * 1px * var(--vs)); height: calc(52px * var(--vs)); image-rendering: pixelated; display: block; }
 .vitals-cap { display: flex; justify-content: space-between; padding-inline: calc(36px * var(--vs)) 8px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 #cap-hp { color: #b8262a; }
 #cap-ch { color: var(--ember); }
@@ -100,6 +100,12 @@ body {
 .clatin { color: var(--muted); font-size: 11px; font-style: italic; }
 .cpreset { color: var(--ember); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
 .cblurb { color: var(--ink); }
+.cspecial { color: var(--visor); font-size: 11px; }
+.cstats { display: grid; gap: 3px; margin-top: 4px; }
+.stat-row { display: grid; grid-template-columns: 48px 1fr 40px; gap: 6px; align-items: center; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.stat-row .bar { height: 6px; background: var(--line); position: relative; }
+.stat-row .bar i { position: absolute; inset: 0 auto 0 0; background: var(--ember); }
+.stat-row .sv { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
 #chars .hint { margin: 0; color: var(--muted); font-size: 12px; text-align: center; }
 #chars kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
 
@@ -187,7 +193,7 @@ body {
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Biometric<small>Prototype 0.7 · Pump Yard</small></div>
+  <div class="brand">Biometric<small>Prototype 0.8 · Pump Yard</small></div>
   <div class="stats">
     <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Cells</span></div>
     <div class="stat"><b id="hud-kills">0</b><span>Kills</span></div>
@@ -211,7 +217,7 @@ body {
   <header>
     <h1>Biometric</h1>
     <p>Choose your bug. Each one moves with its own personality; the dung beetle plays by its own rules.
-    Collect every battery in the pump yard. Dashes cost charge, spiders hunt in pairs, ten hits and you are done.</p>
+    Collect every battery in the pump yard. Dashes cost charge. Cotton stainers hunt in pairs; cocoons shoot webs, and break open into spiders.</p>
   </header>
   <div id="char-grid"></div>
   <p class="hint">Click a bug, or use the arrow keys and Enter. In game: <kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>C</kbd> change bug · <kbd>T</kbd> tune</p>
