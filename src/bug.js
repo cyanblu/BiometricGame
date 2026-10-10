@@ -18,7 +18,8 @@ export const RIG_DEFAULTS = {
   stepHeight: 0.14,
   stepLead: 0.8, // how far ahead (in step times) a foot aims while moving
   scale: 1, // 1 = player size; smaller for little critters
-  legs: 6, // 6 (insect, tripod gait) or 8 (spider, alternating groups of four)
+  legs: 6, // 4 (mantis), 6 (insect, tripod gait) or 8 (spider, groups of four)
+  neck: 0.27, // how far ahead of the body the head sits
 };
 
 // Spiders: eight long legs, low wide stance, quick small steps.
@@ -36,6 +37,11 @@ const LEG_LAYOUT_6 = [
   { side: -1, along: 1, group: 0 }, { side: 1, along: 1, group: 1 },
   { side: -1, along: 0, group: 1 }, { side: 1, along: 0, group: 0 },
   { side: -1, along: -1, group: 0 }, { side: 1, along: -1, group: 1 },
+];
+// Four walking legs (a mantis walks on its middle and hind pairs).
+const LEG_LAYOUT_4 = [
+  { side: -1, along: 0, group: 0 }, { side: 1, along: 0, group: 1 },
+  { side: -1, along: -1, group: 1 }, { side: 1, along: -1, group: 0 },
 ];
 const LEG_LAYOUT_8 = [1.15, 0.4, -0.4, -1.15].flatMap((along, i) => [
   { side: -1, along, group: i % 2 }, { side: 1, along, group: (i + 1) % 2 },
@@ -58,7 +64,7 @@ export function createRig(x, y, heading = Math.PI / 4, opts = RIG_DEFAULTS) {
     head: createFollower([x, y], ...m.head),
     targetHeading: heading,
     pos: { x, y }, heading, headPos: { x, y },
-    legs: (opts.legs === 8 ? LEG_LAYOUT_8 : LEG_LAYOUT_6).map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
+    legs: (opts.legs === 8 ? LEG_LAYOUT_8 : opts.legs === 4 ? LEG_LAYOUT_4 : LEG_LAYOUT_6).map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
     vel: { x: 0, y: 0 },
     time: 0,
   };
@@ -143,7 +149,7 @@ export function updateRig(rig, dt, target, blocked) {
   rig.heading = follow(rig.turn, dt, rig.targetHeading);
 
   const F = frame(rig);
-  const neck = 0.27 * o.scale;
+  const neck = (o.neck ?? 0.27) * o.scale;
   const [hx, hy] = follow(rig.head, dt, [bx + F.fx * neck, by + F.fy * neck]);
   rig.headPos = { x: hx, y: hy };
 

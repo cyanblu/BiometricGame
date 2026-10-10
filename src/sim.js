@@ -34,6 +34,16 @@ export const DEFAULT_PARAMS = {
   emergeTime: 0.6,
   spawnCooldown: 1.5, // attack cooldown of a freshly spawned spider
   corpseTime: 12,
+  // Movement mechanics: 'normal', or 'ball' (dung beetle pushing a ball).
+  mech: 'normal',
+  ballRadius: 0.32,
+  ballPush: 7, // ball acceleration while the beetle pushes it, tiles/s²
+  ballMax: 6.5, // fastest the beetle can push it
+  ballDecel: 1.6, // rolling friction, tiles/s²
+  ballBounce: 0.45, // share of speed kept when it bounces off a wall
+  ballKick: 9, // ball speed after a dash kick
+  ballKillSpeed: 3, // a ball at least this fast squashes spiders
+  beetleSpeed: 6, // how fast the beetle runs to get behind its ball
   critterRadius: 0.18,
   critterSpeed: 1.1,
   critterFleeSpeed: 3.2,
@@ -201,6 +211,12 @@ export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
     tick: 0,
   };
   map.critters.forEach((c, i) => makeSpider(state, c.x, c.y, { timer: 0.3 * i }));
+  if (params.mech === 'ball') {
+    const p = state.player, gap = params.radius + params.ballRadius;
+    p.ball = { x: p.x + p.faceX * gap, y: p.y + p.faceY * gap, vx: 0, vy: 0, z: 0 };
+    move(map, p.ball, { vx: 0, vy: 0 }, 0, params.ballRadius);
+    separate(map, p, p.ball, gap, params);
+  }
   state.vents = map.vents.map((v) => ({
     x: v.x, y: v.y,
     timer: params.ventFirstMin + rand(state) * (params.ventFirstMax - params.ventFirstMin),
@@ -326,7 +342,8 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   if (p.dashBuffer > 0 && p.dashCooldown <= 0 && p.dashTime <= 0 && !p.overheated && !stunned && p.charges > 0) {
     p.charges--;
     p.dashX = p.faceX; p.dashY = p.faceY;
-    p.dashTime = params.dashDuration;
+    // Dung beetle next to its ball: the dash kicks the ball instead.
+    p.dashTime = params.mech === 'ball' && kickBall(state, params) ? 0 : params.dashDuration;
     p.dashCooldown = params.dashCooldown;
     p.dashBuffer = 0;
     p.heat = Math.min(1, p.heat + params.dashHeat);
@@ -339,7 +356,10 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
 
   let mvx, mvy;
   const dashing = p.dashTime > 0;
-  if (dashing) {
+  if (params.mech === 'ball' && !dashing) {
+    stepBall(state, dir, params, dt, topSpeed);
+    mvx = p.vx; mvy = p.vy;
+  } else if (dashing) {
     // Blend the step in which the dash ends, so dash distance does not
     // depend on how the duration lines up with the step size.
     const inDash = Math.min(dt, p.dashTime);
@@ -365,11 +385,13 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   }
 
   move(state.map, p, { vx: mvx, vy: mvy }, dt, r);
+  if (p.ball) separate(state.map, p, p.ball, r + params.ballRadius, params);
 
   const reach = r + params.pickupRange;
   for (const s of state.shards) {
     if (s.taken) continue;
-    if (Math.hypot(s.x - p.x, s.y - p.y) <= reach && Math.abs(groundLevel(state.map, s.x, s.y) - p.z) < SAME_FLOOR) {
+    const near = (e, rr) => Math.hypot(s.x - e.x, s.y - e.y) <= rr && Math.abs(groundLevel(state.map, s.x, s.y) - e.z) < SAME_FLOOR;
+    if (near(p, reach) || (p.ball && near(p.ball, params.ballRadius + params.pickupRange * 0.5))) {
       s.taken = true;
       state.collected++;
       const gain = s.big ? params.bigCharge : params.smallCharge;
@@ -427,11 +449,90 @@ function hitPlayer(state, c, params) {
   }
 }
 
-function killSpider(state, c) {
-  const p = state.player;
+function killSpider(state, c, dirX = state.player.dashX, dirY = state.player.dashY) {
   c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0; c.deadTime = 0;
   state.kills++;
-  state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX: p.dashX, dirY: p.dashY });
+  state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX, dirY });
+}
+
+// ---- dung beetle: a ball with momentum ---------------------------------------
+
+// Keep beetle and ball from overlapping. The beetle gives way; if a wall
+// stops it, the ball gives way instead.
+function separate(map, p, b, gap, params) {
+  for (let k = 0; k < 3; k++) {
+    const dx = p.x - b.x, dy = p.y - b.y, d = Math.hypot(dx, dy);
+    if (d >= gap - 1e-9) return;
+    const ux = d > 1e-9 ? dx / d : -p.faceX, uy = d > 1e-9 ? dy / d : -p.faceY;
+    p.x += ux * (gap - d); p.y += uy * (gap - d);
+    move(map, p, { vx: 0, vy: 0 }, 0, params.radius);
+    const d2 = Math.hypot(p.x - b.x, p.y - b.y);
+    if (d2 < gap - 1e-9) {
+      b.x -= ux * (gap - d2); b.y -= uy * (gap - d2);
+      move(map, b, { vx: 0, vy: 0 }, 0, params.ballRadius);
+    }
+  }
+}
+
+function touchingBall(p, params) {
+  const b = p.ball;
+  return Math.hypot(b.x - p.x, b.y - p.y) <= params.radius + params.ballRadius + 0.12
+    && Math.abs(b.z - p.z) < SAME_FLOOR;
+}
+
+// Dash next to the ball: kick it away from the beetle. Returns true if kicked.
+function kickBall(state, params) {
+  const p = state.player, b = p.ball;
+  if (!touchingBall(p, params)) return false;
+  const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy) || 1;
+  const ux = dx / d, uy = dy / d;
+  const along = b.vx * ux + b.vy * uy;
+  const add = Math.max(0, params.ballKick - along);
+  b.vx += ux * add; b.vy += uy * add;
+  state.events.push({ type: 'kick', x: b.x, y: b.y });
+  return true;
+}
+
+// The beetle runs to the spot behind the ball (opposite the direction it
+// wants to go) and pushes from there. The ball accelerates slowly, keeps
+// rolling when the beetle lets go, and bounces off walls and cliffs.
+function stepBall(state, dir, params, dt, topSpeed) {
+  const p = state.player, b = p.ball, map = state.map;
+  const gap = params.radius + params.ballRadius;
+  // Rolling friction.
+  let sp = Math.hypot(b.vx, b.vy);
+  if (sp > 0) { const ns = Math.max(0, sp - params.ballDecel * dt); b.vx *= ns / sp; b.vy *= ns / sp; sp = ns; }
+  // Push when touching the ball from behind.
+  if (dir.mag > 0 && touchingBall(p, params)) {
+    const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy) || 1;
+    const align = (dx / d) * (dir.x / dir.mag) + (dy / d) * (dir.y / dir.mag);
+    if (align > 0.6) {
+      b.vx += (dx / d) * params.ballPush * dir.mag * dt;
+      b.vy += (dy / d) * params.ballPush * dir.mag * dt;
+      const s2 = Math.hypot(b.vx, b.vy), cap = params.ballMax * (p.overheated ? params.overheatSpeed : 1);
+      if (s2 > cap) { b.vx *= cap / s2; b.vy *= cap / s2; }
+    }
+  }
+  // Roll; a wall contact reflects the blocked part of the velocity.
+  const before = { vx: b.vx, vy: b.vy };
+  move(map, b, b, dt, params.ballRadius);
+  b.vx -= params.ballBounce * (before.vx - b.vx);
+  b.vy -= params.ballBounce * (before.vy - b.vy);
+  // The beetle heads for the spot behind the ball.
+  let aimX = 0, aimY = 0;
+  if (dir.mag > 0) { aimX = dir.x / dir.mag; aimY = dir.y / dir.mag; }
+  else if (sp > 0.2) { aimX = b.vx / sp; aimY = b.vy / sp; }
+  let wantX = 0, wantY = 0;
+  if (aimX || aimY) {
+    const tx = b.x - aimX * gap, ty = b.y - aimY * gap;
+    wantX = b.vx + (tx - p.x) * 10; wantY = b.vy + (ty - p.y) * 10;
+    const ws = Math.hypot(wantX, wantY), cap = Math.max(topSpeed, params.beetleSpeed);
+    if (ws > cap) { wantX *= cap / ws; wantY *= cap / ws; }
+  }
+  [p.vx, p.vy] = approach(p.vx, p.vy, wantX, wantY, params.accel * dt);
+  // Face the ball.
+  const fx = b.x - p.x, fy = b.y - p.y, fl = Math.hypot(fx, fy);
+  if (fl > 1e-6) { p.faceX = fx / fl; p.faceY = fy / fl; }
 }
 
 // Vents release a spider when their timer runs out, if there is room and
@@ -562,6 +663,13 @@ function stepSpiders(state, params, dt, dashing) {
 
     const sameFloor = Math.abs(c.z - p.z) < SAME_FLOOR;
     if (dashing && sameFloor && dist(c, p) < contact + params.killMargin) { killSpider(state, c); continue; }
+    if (p.ball) {
+      // A fast ball squashes whatever it rolls over.
+      const b = p.ball, bs = Math.hypot(b.vx, b.vy);
+      if (bs >= params.ballKillSpeed && Math.abs(c.z - b.z) < SAME_FLOOR && dist(c, b) < params.ballRadius + params.critterRadius) {
+        killSpider(state, c, b.vx / bs, b.vy / bs); continue;
+      }
+    }
     if (c.mode === 'lunge' && !c.hitDone && sameFloor && dist(c, p) < contact + 0.05) {
       c.hitDone = true;
       hitPlayer(state, c, params);

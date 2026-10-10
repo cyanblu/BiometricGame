@@ -122,3 +122,26 @@ test('spider rig: 8 legs, never more than 4 feet in the air, feet within reach',
     assert.ok(g.overReachShare < 0.05, `speed ${speed}: over reach ${(g.overReachShare * 100).toFixed(1)}%`);
   }
 });
+
+test('every playable bug: gait stays supported and legs stay within reach', async () => {
+  const { CHARACTERS } = await import('../src/characters.js');
+  assert.equal(CHARACTERS.length, 6);
+  for (const ch of CHARACTERS) {
+    const opts = { ...RIG_DEFAULTS, ...ch.rig, ...ch.motion };
+    const rig = createRig(0, 0, 0, opts);
+    assert.equal(rig.legs.length, ch.rig.legs, ch.id);
+    for (const speed of [1, 4.5]) {
+      const g = walk(speed, 6, 1 / 60, opts);
+      assert.ok(g.maxAir <= ch.rig.legs / 2, `${ch.id} @${speed}: ${g.maxAir} feet in the air`);
+      assert.ok(g.steps > 0, `${ch.id} @${speed}: never stepped`);
+      assert.ok(g.overReachShare < 0.05, `${ch.id} @${speed}: over reach ${(g.overReachShare * 100).toFixed(1)}%, worst ${g.worstReach.toFixed(2)}`);
+    }
+  }
+});
+
+test('each motion preset maps to exactly one bug', async () => {
+  const { CHARACTERS } = await import('../src/characters.js');
+  const presets = CHARACTERS.map((c) => c.preset);
+  for (const p of ['Default', 'Heavy', 'Springy', 'Snappy', 'Robot']) assert.equal(presets.filter((x) => x === p).length, 1, p);
+  assert.equal(CHARACTERS.filter((c) => c.params.mech === 'ball').length, 1);
+});

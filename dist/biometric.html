@@ -69,6 +69,33 @@ body {
 .btn:hover { border-color: var(--muted); }
 .btn:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
 #tune-btn { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); }
+#bug-btn { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 56px); }
+
+/* Character select: full-screen, scrolls on small screens. */
+#chars {
+  position: fixed; inset: 0; z-index: 5; overflow-y: auto; box-sizing: border-box;
+  background: rgba(11, 13, 16, 0.94);
+  padding: calc(env(safe-area-inset-top, 0px) + 24px) 16px calc(env(safe-area-inset-bottom, 0px) + 24px);
+  display: grid; align-content: start; justify-items: center; gap: 16px;
+}
+#chars header { max-width: 760px; display: grid; gap: 8px; text-align: center; }
+#chars h1 { margin: 0; font: 700 34px/1 var(--display); letter-spacing: 0.04em; }
+#chars header p { margin: 0; color: var(--muted); }
+#char-grid { width: min(960px, 100%); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.char {
+  display: grid; gap: 4px; align-content: start; text-align: left; cursor: pointer;
+  font: 12px/1.4 var(--mono); color: var(--ink); background: var(--glass);
+  border: 1px solid var(--line); border-radius: 2px; padding: 10px;
+}
+.char canvas { width: 100%; height: auto; aspect-ratio: 120 / 76; image-rendering: pixelated; display: block; border: 1px solid var(--line); }
+.char:hover, .char:focus-visible { border-color: var(--ember); outline: none; }
+.char[aria-pressed="true"] { border-color: var(--visor); }
+.cname { font: 700 18px/1.1 var(--display); margin-top: 4px; }
+.clatin { color: var(--muted); font-size: 11px; font-style: italic; }
+.cpreset { color: var(--ember); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+.cblurb { color: var(--ink); }
+#chars .hint { margin: 0; color: var(--muted); font-size: 12px; text-align: center; }
+#chars kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
 
 .keys {
   position: fixed; left: 16px; top: calc(env(safe-area-inset-top, 0px) + 58px);
@@ -76,16 +103,15 @@ body {
 }
 .keys kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
 
-#intro, #win, #dead {
+#win, #dead {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(360px, calc(100% - 32px)); box-sizing: border-box;
   background: var(--glass); border: 1px solid var(--line); border-radius: 2px;
   padding: 20px 22px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   display: grid; gap: 10px;
 }
-#intro h1, #win h2, #dead h2 { margin: 0; font: 700 26px/1.05 var(--display); text-wrap: balance; }
-#intro p, #win p, #dead p { margin: 0; color: var(--muted); }
-#intro .go { color: var(--ember); font-weight: 500; }
+#win h2, #dead h2 { margin: 0; font: 700 26px/1.05 var(--display); text-wrap: balance; }
+#win p, #dead p { margin: 0; color: var(--muted); }
 #dead h2 { color: var(--hot); }
 #dead-time { font: 700 28px/1 var(--display); color: var(--muted); font-variant-numeric: tabular-nums; }
 #win-time { font: 700 34px/1 var(--display); color: var(--ember); font-variant-numeric: tabular-nums; }
@@ -133,6 +159,9 @@ body {
   #dash-btn { display: block; }
   .keys { display: none; }
 }
+@media (max-width: 760px) {
+  #char-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 560px) {
   .vitals-box { --vs: 1.5; } /* 3 device px per art px on 2x phones */
   #panel { top: auto; left: 0; width: 100%; max-height: 62%; border-left: 0; border-top: 1px solid var(--line); border-radius: 0; }
@@ -143,14 +172,14 @@ body {
   .keys { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  #intro, #win, #panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  #chars, #win, #panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 </style>
 
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Biometric<small>Prototype 0.6 · Pump Yard</small></div>
+  <div class="brand">Biometric<small>Prototype 0.7 · Pump Yard</small></div>
   <div class="stats">
     <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Cells</span></div>
     <div class="stat"><b id="hud-kills">0</b><span>Kills</span></div>
@@ -166,15 +195,18 @@ body {
 </div>
 <div class="keys"><kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>T</kbd> tune</div>
 <button class="btn" id="tune-btn" type="button" aria-expanded="false" aria-controls="panel">Tune</button>
+<button class="btn" id="bug-btn" type="button">Bug</button>
 <button id="dash-btn" type="button">DASH</button>
 <div id="stick" hidden></div>
 
-<section id="intro">
-  <h1>Biometric</h1>
-  <p>You are a small mechanical bug in a drowned pump yard. <span id="intro-count">Fifteen</span> batteries lie in the rain. Collect them all as fast as you can.</p>
-  <p>Every dash burns one charge. A small cell gives 3, a big red battery 9. Dash straight through a spider to kill it.</p>
-  <p>Spiders crawl out of the vents. Alone they are cowards; two together crackle with an arc and lunge. Ten hits and you are done.</p>
-  <p class="go">Press a move key or tap to start.</p>
+<section id="chars" aria-label="Choose your bug">
+  <header>
+    <h1>Biometric</h1>
+    <p>Choose your bug. Each one moves with its own personality; the dung beetle plays by its own rules.
+    Collect every battery in the pump yard. Dashes cost charge, spiders hunt in pairs, ten hits and you are done.</p>
+  </header>
+  <div id="char-grid"></div>
+  <p class="hint">Click a bug, or use the arrow keys and Enter. In game: <kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>C</kbd> change bug · <kbd>T</kbd> tune</p>
 </section>
 
 <section id="dead" hidden>
@@ -243,6 +275,16 @@ const DEFAULT_PARAMS = {
   emergeTime: 0.6,
   spawnCooldown: 1.5, // attack cooldown of a freshly spawned spider
   corpseTime: 12,
+  // Movement mechanics: 'normal', or 'ball' (dung beetle pushing a ball).
+  mech: 'normal',
+  ballRadius: 0.32,
+  ballPush: 7, // ball acceleration while the beetle pushes it, tiles/s²
+  ballMax: 6.5, // fastest the beetle can push it
+  ballDecel: 1.6, // rolling friction, tiles/s²
+  ballBounce: 0.45, // share of speed kept when it bounces off a wall
+  ballKick: 9, // ball speed after a dash kick
+  ballKillSpeed: 3, // a ball at least this fast squashes spiders
+  beetleSpeed: 6, // how fast the beetle runs to get behind its ball
   critterRadius: 0.18,
   critterSpeed: 1.1,
   critterFleeSpeed: 3.2,
@@ -410,6 +452,12 @@ function createState(level, seed = 1, params = DEFAULT_PARAMS) {
     tick: 0,
   };
   map.critters.forEach((c, i) => makeSpider(state, c.x, c.y, { timer: 0.3 * i }));
+  if (params.mech === 'ball') {
+    const p = state.player, gap = params.radius + params.ballRadius;
+    p.ball = { x: p.x + p.faceX * gap, y: p.y + p.faceY * gap, vx: 0, vy: 0, z: 0 };
+    move(map, p.ball, { vx: 0, vy: 0 }, 0, params.ballRadius);
+    separate(map, p, p.ball, gap, params);
+  }
   state.vents = map.vents.map((v) => ({
     x: v.x, y: v.y,
     timer: params.ventFirstMin + rand(state) * (params.ventFirstMax - params.ventFirstMin),
@@ -535,7 +583,8 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   if (p.dashBuffer > 0 && p.dashCooldown <= 0 && p.dashTime <= 0 && !p.overheated && !stunned && p.charges > 0) {
     p.charges--;
     p.dashX = p.faceX; p.dashY = p.faceY;
-    p.dashTime = params.dashDuration;
+    // Dung beetle next to its ball: the dash kicks the ball instead.
+    p.dashTime = params.mech === 'ball' && kickBall(state, params) ? 0 : params.dashDuration;
     p.dashCooldown = params.dashCooldown;
     p.dashBuffer = 0;
     p.heat = Math.min(1, p.heat + params.dashHeat);
@@ -548,7 +597,10 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
 
   let mvx, mvy;
   const dashing = p.dashTime > 0;
-  if (dashing) {
+  if (params.mech === 'ball' && !dashing) {
+    stepBall(state, dir, params, dt, topSpeed);
+    mvx = p.vx; mvy = p.vy;
+  } else if (dashing) {
     // Blend the step in which the dash ends, so dash distance does not
     // depend on how the duration lines up with the step size.
     const inDash = Math.min(dt, p.dashTime);
@@ -574,11 +626,13 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   }
 
   move(state.map, p, { vx: mvx, vy: mvy }, dt, r);
+  if (p.ball) separate(state.map, p, p.ball, r + params.ballRadius, params);
 
   const reach = r + params.pickupRange;
   for (const s of state.shards) {
     if (s.taken) continue;
-    if (Math.hypot(s.x - p.x, s.y - p.y) <= reach && Math.abs(groundLevel(state.map, s.x, s.y) - p.z) < SAME_FLOOR) {
+    const near = (e, rr) => Math.hypot(s.x - e.x, s.y - e.y) <= rr && Math.abs(groundLevel(state.map, s.x, s.y) - e.z) < SAME_FLOOR;
+    if (near(p, reach) || (p.ball && near(p.ball, params.ballRadius + params.pickupRange * 0.5))) {
       s.taken = true;
       state.collected++;
       const gain = s.big ? params.bigCharge : params.smallCharge;
@@ -636,11 +690,90 @@ function hitPlayer(state, c, params) {
   }
 }
 
-function killSpider(state, c) {
-  const p = state.player;
+function killSpider(state, c, dirX = state.player.dashX, dirY = state.player.dashY) {
   c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0; c.deadTime = 0;
   state.kills++;
-  state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX: p.dashX, dirY: p.dashY });
+  state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX, dirY });
+}
+
+// ---- dung beetle: a ball with momentum ---------------------------------------
+
+// Keep beetle and ball from overlapping. The beetle gives way; if a wall
+// stops it, the ball gives way instead.
+function separate(map, p, b, gap, params) {
+  for (let k = 0; k < 3; k++) {
+    const dx = p.x - b.x, dy = p.y - b.y, d = Math.hypot(dx, dy);
+    if (d >= gap - 1e-9) return;
+    const ux = d > 1e-9 ? dx / d : -p.faceX, uy = d > 1e-9 ? dy / d : -p.faceY;
+    p.x += ux * (gap - d); p.y += uy * (gap - d);
+    move(map, p, { vx: 0, vy: 0 }, 0, params.radius);
+    const d2 = Math.hypot(p.x - b.x, p.y - b.y);
+    if (d2 < gap - 1e-9) {
+      b.x -= ux * (gap - d2); b.y -= uy * (gap - d2);
+      move(map, b, { vx: 0, vy: 0 }, 0, params.ballRadius);
+    }
+  }
+}
+
+function touchingBall(p, params) {
+  const b = p.ball;
+  return Math.hypot(b.x - p.x, b.y - p.y) <= params.radius + params.ballRadius + 0.12
+    && Math.abs(b.z - p.z) < SAME_FLOOR;
+}
+
+// Dash next to the ball: kick it away from the beetle. Returns true if kicked.
+function kickBall(state, params) {
+  const p = state.player, b = p.ball;
+  if (!touchingBall(p, params)) return false;
+  const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy) || 1;
+  const ux = dx / d, uy = dy / d;
+  const along = b.vx * ux + b.vy * uy;
+  const add = Math.max(0, params.ballKick - along);
+  b.vx += ux * add; b.vy += uy * add;
+  state.events.push({ type: 'kick', x: b.x, y: b.y });
+  return true;
+}
+
+// The beetle runs to the spot behind the ball (opposite the direction it
+// wants to go) and pushes from there. The ball accelerates slowly, keeps
+// rolling when the beetle lets go, and bounces off walls and cliffs.
+function stepBall(state, dir, params, dt, topSpeed) {
+  const p = state.player, b = p.ball, map = state.map;
+  const gap = params.radius + params.ballRadius;
+  // Rolling friction.
+  let sp = Math.hypot(b.vx, b.vy);
+  if (sp > 0) { const ns = Math.max(0, sp - params.ballDecel * dt); b.vx *= ns / sp; b.vy *= ns / sp; sp = ns; }
+  // Push when touching the ball from behind.
+  if (dir.mag > 0 && touchingBall(p, params)) {
+    const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy) || 1;
+    const align = (dx / d) * (dir.x / dir.mag) + (dy / d) * (dir.y / dir.mag);
+    if (align > 0.6) {
+      b.vx += (dx / d) * params.ballPush * dir.mag * dt;
+      b.vy += (dy / d) * params.ballPush * dir.mag * dt;
+      const s2 = Math.hypot(b.vx, b.vy), cap = params.ballMax * (p.overheated ? params.overheatSpeed : 1);
+      if (s2 > cap) { b.vx *= cap / s2; b.vy *= cap / s2; }
+    }
+  }
+  // Roll; a wall contact reflects the blocked part of the velocity.
+  const before = { vx: b.vx, vy: b.vy };
+  move(map, b, b, dt, params.ballRadius);
+  b.vx -= params.ballBounce * (before.vx - b.vx);
+  b.vy -= params.ballBounce * (before.vy - b.vy);
+  // The beetle heads for the spot behind the ball.
+  let aimX = 0, aimY = 0;
+  if (dir.mag > 0) { aimX = dir.x / dir.mag; aimY = dir.y / dir.mag; }
+  else if (sp > 0.2) { aimX = b.vx / sp; aimY = b.vy / sp; }
+  let wantX = 0, wantY = 0;
+  if (aimX || aimY) {
+    const tx = b.x - aimX * gap, ty = b.y - aimY * gap;
+    wantX = b.vx + (tx - p.x) * 10; wantY = b.vy + (ty - p.y) * 10;
+    const ws = Math.hypot(wantX, wantY), cap = Math.max(topSpeed, params.beetleSpeed);
+    if (ws > cap) { wantX *= cap / ws; wantY *= cap / ws; }
+  }
+  [p.vx, p.vy] = approach(p.vx, p.vy, wantX, wantY, params.accel * dt);
+  // Face the ball.
+  const fx = b.x - p.x, fy = b.y - p.y, fl = Math.hypot(fx, fy);
+  if (fl > 1e-6) { p.faceX = fx / fl; p.faceY = fy / fl; }
 }
 
 // Vents release a spider when their timer runs out, if there is room and
@@ -771,6 +904,13 @@ function stepSpiders(state, params, dt, dashing) {
 
     const sameFloor = Math.abs(c.z - p.z) < SAME_FLOOR;
     if (dashing && sameFloor && dist(c, p) < contact + params.killMargin) { killSpider(state, c); continue; }
+    if (p.ball) {
+      // A fast ball squashes whatever it rolls over.
+      const b = p.ball, bs = Math.hypot(b.vx, b.vy);
+      if (bs >= params.ballKillSpeed && Math.abs(c.z - b.z) < SAME_FLOOR && dist(c, b) < params.ballRadius + params.critterRadius) {
+        killSpider(state, c, b.vx / bs, b.vy / bs); continue;
+      }
+    }
     if (c.mode === 'lunge' && !c.hitDone && sameFloor && dist(c, p) < contact + 0.05) {
       c.hitDone = true;
       hitPlayer(state, c, params);
@@ -876,6 +1016,95 @@ const LEVELS = [
   },
 ];
 
+// ---- src/characters.js
+// Playable bugs. Pure data: rig proportions (src/bug.js), body-motion
+// personality (f / zeta / r, see src/dynamics.js), how the renderer draws
+// them (`kind`) and any gameplay overrides (`params`, merged over the sim's
+// DEFAULT_PARAMS). Each motion preset belongs to one bug.
+
+const CHARACTERS = [
+  {
+    id: 'cowboy',
+    name: 'Cowboy beetle',
+    latin: 'Chondropyga dorsalis',
+    preset: 'Default',
+    blurb: 'The all-rounder. A steady six-legged trot with a little bounce.',
+    kind: 'cowboy',
+    motion: { bodyF: 3, bodyZeta: 0.5, bodyR: 1, headF: 1.6 },
+    rig: { legs: 6, scale: 1 },
+    params: {},
+  },
+  {
+    id: 'stag',
+    name: 'Stag beetle',
+    latin: 'Lucanus cervus · Hirschkäfer',
+    preset: 'Heavy',
+    blurb: 'Huge antlers, heavy body. Leans into every turn, never wobbles.',
+    kind: 'stag',
+    motion: { bodyF: 1.2, bodyZeta: 1.2, bodyR: 0, headF: 1 },
+    rig: {
+      legs: 6, scale: 1.1, bodyHeight: 0.24, hipAlong: 0.16, footSide: 0.4, footAlong: 0.28,
+      thigh: 0.3, shin: 0.38, stepTime: 0.12, neck: 0.3,
+    },
+    params: {},
+  },
+  {
+    id: 'jumper',
+    name: 'Jumping spider',
+    latin: 'Salticidae · Springspinne',
+    preset: 'Snappy',
+    blurb: 'Eight quick legs and big glowing eyes. Goes exactly where you point.',
+    kind: 'jumper',
+    motion: { bodyF: 6, bodyZeta: 1, bodyR: 0, headF: 5 },
+    rig: {
+      legs: 8, scale: 0.9, bodyHeight: 0.2, hipSide: 0.08, hipAlong: 0.07, footSide: 0.5, footAlong: 0.3,
+      thigh: 0.34, shin: 0.4, stepThreshold: 0.22, stepTime: 0.06, stepHeight: 0.16, neck: 0.2,
+    },
+    params: {},
+  },
+  {
+    id: 'harvestman',
+    name: 'Daddy longlegs',
+    latin: 'Opiliones · Weberknecht',
+    preset: 'Springy',
+    blurb: 'A tiny body slung between eight absurd legs. Bounces and sways.',
+    kind: 'harvestman',
+    motion: { bodyF: 2.5, bodyZeta: 0.25, bodyR: 2, headF: 2.5 },
+    rig: {
+      legs: 8, scale: 1, bodyHeight: 0.48, hipSide: 0.04, hipAlong: 0.03, footSide: 0.9, footAlong: 0.55,
+      thigh: 0.62, shin: 0.8, stepThreshold: 0.38, stepTime: 0.1, stepHeight: 0.3, neck: 0.05,
+    },
+    params: {},
+  },
+  {
+    id: 'mantis',
+    name: 'Praying mantis',
+    latin: 'Mantis religiosa · Gottesanbeterin',
+    preset: 'Robot',
+    blurb: 'Walks on four legs, arms folded. Rears back before every move.',
+    kind: 'mantis',
+    motion: { bodyF: 2, bodyZeta: 0.5, bodyR: -2, headF: 1.6 },
+    rig: {
+      legs: 4, scale: 1.1, bodyHeight: 0.26, hipSide: 0.06, hipAlong: 0.12, footSide: 0.38, footAlong: 0.32,
+      thigh: 0.32, shin: 0.4, stepTime: 0.1, neck: 0.42,
+    },
+    params: {},
+  },
+  {
+    id: 'dung',
+    name: 'Dung beetle',
+    latin: 'Scarabaeus sacer · Pillendreher',
+    preset: 'Own: the ball',
+    blurb: 'Pushes a ball that keeps rolling. Kick it with a dash; a fast ball flattens spiders.',
+    kind: 'dung',
+    motion: { bodyF: 3, bodyZeta: 0.7, bodyR: 0.5, headF: 2 },
+    rig: { legs: 6, scale: 0.9, bodyHeight: 0.18, neck: 0.2 },
+    params: { mech: 'ball' },
+  },
+];
+
+const characterById = (id) => CHARACTERS.find((c) => c.id === id) ?? CHARACTERS[0];
+
 // ---- src/dynamics.js
 // Second-order motion: y follows x with the "personality" set by
 //   f    natural frequency in Hz (how fast it responds)
@@ -957,7 +1186,8 @@ const RIG_DEFAULTS = {
   stepHeight: 0.14,
   stepLead: 0.8, // how far ahead (in step times) a foot aims while moving
   scale: 1, // 1 = player size; smaller for little critters
-  legs: 6, // 6 (insect, tripod gait) or 8 (spider, alternating groups of four)
+  legs: 6, // 4 (mantis), 6 (insect, tripod gait) or 8 (spider, groups of four)
+  neck: 0.27, // how far ahead of the body the head sits
 };
 
 // Spiders: eight long legs, low wide stance, quick small steps.
@@ -975,6 +1205,11 @@ const LEG_LAYOUT_6 = [
   { side: -1, along: 1, group: 0 }, { side: 1, along: 1, group: 1 },
   { side: -1, along: 0, group: 1 }, { side: 1, along: 0, group: 0 },
   { side: -1, along: -1, group: 0 }, { side: 1, along: -1, group: 1 },
+];
+// Four walking legs (a mantis walks on its middle and hind pairs).
+const LEG_LAYOUT_4 = [
+  { side: -1, along: 0, group: 0 }, { side: 1, along: 0, group: 1 },
+  { side: -1, along: -1, group: 1 }, { side: 1, along: -1, group: 0 },
 ];
 const LEG_LAYOUT_8 = [1.15, 0.4, -0.4, -1.15].flatMap((along, i) => [
   { side: -1, along, group: i % 2 }, { side: 1, along, group: (i + 1) % 2 },
@@ -997,7 +1232,7 @@ function createRig(x, y, heading = Math.PI / 4, opts = RIG_DEFAULTS) {
     head: createFollower([x, y], ...m.head),
     targetHeading: heading,
     pos: { x, y }, heading, headPos: { x, y },
-    legs: (opts.legs === 8 ? LEG_LAYOUT_8 : LEG_LAYOUT_6).map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
+    legs: (opts.legs === 8 ? LEG_LAYOUT_8 : opts.legs === 4 ? LEG_LAYOUT_4 : LEG_LAYOUT_6).map((l) => ({ ...l, foot: { x, y }, from: { x, y }, t: 1, lift: 0 })),
     vel: { x: 0, y: 0 },
     time: 0,
   };
@@ -1082,7 +1317,7 @@ function updateRig(rig, dt, target, blocked) {
   rig.heading = follow(rig.turn, dt, rig.targetHeading);
 
   const F = frame(rig);
-  const neck = 0.27 * o.scale;
+  const neck = (o.neck ?? 0.27) * o.scale;
   const [hx, hy] = follow(rig.head, dt, [bx + F.fx * neck, by + F.fy * neck]);
   rig.headPos = { x: hx, y: hy };
 
@@ -1474,7 +1709,7 @@ function createRenderer(canvas) {
   const out = canvas.getContext('2d');
   const low = document.createElement('canvas');
   const light = document.createElement('canvas');
-  const ctx = low.getContext('2d', { willReadFrequently: true });
+  let ctx = low.getContext('2d', { willReadFrequently: true }); // swapped while drawing menu previews
   const lctx = light.getContext('2d');
   const table = buildLut();
   const fx = { particles: [], trail: [], drops: [] };
@@ -1931,69 +2166,227 @@ function createRenderer(canvas) {
     baseZ = 0;
   }
 
+  // Shell colours per playable bug: [shell, shade, accent, limb].
+  const KIND_COLORS = {
+    cowboy: [C.rust0, C.void2, C.bone, C.limb],
+    stag: [C.beetleB1, C.beetleB0, C.rust2, C.limb],
+    jumper: [C.hull1, C.hull0, C.void1, C.void1],
+    harvestman: [C.rust1, C.rust0, C.lamp0, C.rust1],
+    mantis: [C.moss3, C.moss2, C.cell0, C.moss2],
+    dung: [C.void2, C.void0, C.metal3, C.void1],
+  };
+
+  // Draws a playable bug; style.kind picks the species.
   function drawBugAt(rig, style, t) {
     const o = rig.opts, k = o.scale;
     const { x, y } = rig.pos, hd = rig.heading;
     const z = o.bodyHeight * k;
-    ellipsePath(x, y, 0, hd, 0.3 * k, 0.2 * k);
+    const c = Math.cos(hd), s = Math.sin(hd);
+    const kind = style.kind || 'cowboy';
+    let [shell, shade, accent, limb] = KIND_COLORS[kind];
+    if (style.empty) { shell = shade; accent = C.metal1; } // out of charge: dull and dark
+    const legStyle = { ...style, shade, limb, legW: kind === 'harvestman' ? 1.6 : kind === 'mantis' ? 2 : style.legW };
+    // Point in the bug's frame: along its heading, to its side, at a height.
+    const B = (along, side, zz) => P3(x + (c * along - s * side) * k, y + (s * along + c * side) * k, zz);
+    const seg = (along, side, zz, a, b, color) => {
+      ellipsePath(x + (c * along - s * side) * k, y + (s * along + c * side) * k, zz, hd, a * k, b * k);
+      ctx.fillStyle = color; ctx.fill();
+    };
+    const line = (pts, color, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = px(width); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath(); pts.forEach((q, i) => (i ? ctx.lineTo(...B(...q)) : ctx.moveTo(...B(...q)))); ctx.stroke();
+    };
+    const dot = (along, side, zz, r, color) => {
+      const [qx, qy] = B(along, side, zz);
+      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(qx, qy, px(r), 0, Math.PI * 2); ctx.fill();
+    };
+
+    // Shadow and far legs.
+    ellipsePath(x, y, 0, hd, (kind === 'harvestman' ? 0.16 : 0.3) * k, (kind === 'harvestman' ? 0.14 : 0.2) * k);
     ctx.fillStyle = C.void1; ctx.fill();
     const depth = (l) => { const hp = hipOf(rig, l); return hp.x + hp.y; };
     const mid = x + y;
     const legs = [...rig.legs].sort((a, b) => depth(a) - depth(b));
-    for (const l of legs) if (depth(l) < mid) drawLeg(rig, l, style);
-    ellipsePath(x, y, z - 0.05 * k, hd, 0.27 * k, 0.17 * k);
-    ctx.fillStyle = style.shade; ctx.fill();
-    ellipsePath(x, y, z, hd, 0.26 * k, 0.16 * k);
-    ctx.fillStyle = style.shell; ctx.fill();
-    const c = Math.cos(hd), s = Math.sin(hd);
-    ctx.strokeStyle = style.shade; ctx.lineWidth = px(1.5 * k);
-    ctx.beginPath();
-    ctx.moveTo(...P3(x + c * 0.2 * k, y + s * 0.2 * k, z + 0.01));
-    ctx.lineTo(...P3(x - c * 0.24 * k, y - s * 0.24 * k, z + 0.01));
-    ctx.stroke();
-    if (style.led != null && style.empty) {
-      // Out of charges: the light is dead, not blinking.
-      const [lx, ly] = P3(x - c * 0.12 * k, y - s * 0.12 * k, z + 0.02);
+    for (const l of legs) if (depth(l) < mid) drawLeg(rig, l, legStyle);
+
+    // Head position relative to the body (the head lags on its own follower).
+    const hx = rig.headPos.x, hy = rig.headPos.y;
+    const headAlong = ((hx - x) * c + (hy - y) * s) / k, headSide = (-(hx - x) * s + (hy - y) * c) / k;
+    let ledAt = [-0.12, 0];
+    const eyes = [];
+
+    if (kind === 'cowboy') {
+      // Flower chafer: dark shell with cream margins and a cream mid-line.
+      seg(-0.05, 0, z - 0.05 * k, 0.28, 0.2, shade);
+      seg(-0.05, 0, z, 0.27, 0.19, shell);
+      ctx.strokeStyle = accent; ctx.lineWidth = px(2);
+      ellipsePath(x - c * 0.05 * k, y - s * 0.05 * k, z + 0.005, hd, 0.22 * k, 0.15 * k); ctx.stroke();
+      line([[0.12, 0, z + 0.01], [-0.24, 0, z + 0.01]], accent, 1.5);
+      seg(0.17, 0, z + 0.01, 0.1, 0.15, shade);
+      seg(0.17, 0, z + 0.02, 0.09, 0.14, shell);
+      dot(0.2, 0.08, z + 0.03, 1, accent); dot(0.2, -0.08, z + 0.03, 1, accent);
+      seg(headAlong, headSide, z, 0.06, 0.07, shell);
+      for (const sd of [-1, 1]) line([[headAlong + 0.04, headSide + sd * 0.03, z + 0.03], [headAlong + 0.12, headSide + sd * 0.09, z + 0.07]], limb, 1);
+      eyes.push([headAlong + 0.04, headSide + 0.04], [headAlong + 0.04, headSide - 0.04]);
+      ledAt = [-0.1, 0];
+    } else if (kind === 'stag') {
+      // Stag beetle: chestnut wing cases, black thorax, wide head and antlers.
+      seg(-0.1, 0, z - 0.05 * k, 0.29, 0.18, shade);
+      seg(-0.1, 0, z, 0.28, 0.17, shell);
+      line([[0.12, 0, z + 0.01], [-0.36, 0, z + 0.01]], shade, 1);
+      line([[0.05, 0.08, z + 0.02], [-0.25, 0.1, z + 0.02]], accent, 1); // sheen
+      seg(0.15, 0, z, 0.1, 0.16, C.void1);
+      seg(0.15, 0, z + 0.015, 0.09, 0.15, C.void2);
+      seg(headAlong, headSide, z + 0.01, 0.08, 0.14, C.void2);
+      for (const sd of [-1, 1]) {
+        const h0 = [headAlong + 0.05, headSide + sd * 0.07, z + 0.03];
+        line([h0, [headAlong + 0.2, headSide + sd * 0.15, z + 0.06], [headAlong + 0.33, headSide + sd * 0.04, z + 0.05]], accent, 3);
+        line([[headAlong + 0.2, headSide + sd * 0.14, z + 0.06], [headAlong + 0.22, headSide + sd * 0.07, z + 0.05]], accent, 1.5); // tine
+      }
+      eyes.push([headAlong + 0.02, headSide + 0.1], [headAlong + 0.02, headSide - 0.1]);
+      ledAt = [-0.18, 0];
+    } else if (kind === 'jumper') {
+      // Jumping spider: striped abdomen, pale head with four big front eyes.
+      seg(-0.16, 0, z - 0.04 * k, 0.18, 0.15, shade);
+      seg(-0.16, 0, z, 0.17, 0.14, shell);
+      for (const f of [-0.08, -0.16, -0.24]) line([[f, -0.08, z + 0.01], [f - 0.04, 0, z + 0.015], [f, 0.08, z + 0.01]], accent, 1.2);
+      seg(0.07, 0, z, 0.12, 0.11, shade);
+      seg(0.07, 0, z + 0.015, 0.11, 0.1, C.hull2);
+      eyes.push([0.17, 0.04, 2.2], [0.17, -0.04, 2.2], [0.15, 0.08, 1], [0.15, -0.08, 1]);
+      ledAt = [-0.16, 0];
+    } else if (kind === 'harvestman') {
+      // Daddy longlegs: a small round body with a darker saddle and an eye turret.
+      seg(0, 0, z - 0.03 * k, 0.12, 0.11, shade);
+      seg(0, 0, z, 0.11, 0.1, shell);
+      seg(-0.01, 0, z + 0.01, 0.06, 0.05, shade);
+      dot(0.05, 0, z + 0.05, 1.6, accent);
+      eyes.push([0.06, 0.015, 0.9], [0.06, -0.015, 0.9]);
+      ledAt = [-0.04, 0];
+    } else if (kind === 'mantis') {
+      // Mantis: long segmented abdomen, thin thorax, triangular head, folded arms.
+      seg(-0.24, 0, z - 0.03 * k, 0.29, 0.11, shade);
+      seg(-0.24, 0, z, 0.28, 0.1, shell);
+      for (const f of [-0.1, -0.18, -0.26, -0.34, -0.42]) line([[f, -0.08, z + 0.01], [f, 0.08, z + 0.01]], shade, 1);
+      line([[-0.02, 0, z + 0.02], [0.3, 0, z + 0.12]], shell, 5);
+      seg(headAlong, headSide, z + 0.13, 0.06, 0.1, accent);
+      for (const sd of [-1, 1]) {
+        // Raptorial forelegs, folded as if praying.
+        line([[0.22, sd * 0.03, z + 0.09], [0.34, sd * 0.06, z + 0.16], [0.3, sd * 0.03, z + 0.03]], accent, 2.2);
+        line([[headAlong + 0.03, headSide + sd * 0.03, z + 0.15], [headAlong + 0.2, headSide + sd * 0.12, z + 0.26]], limb, 1);
+      }
+      eyes.push([headAlong + 0.01, headSide + 0.06, 1.3, z + 0.13], [headAlong + 0.01, headSide - 0.06, 1.3, z + 0.13]);
+      ledAt = [-0.18, 0];
+    } else {
+      // Dung beetle: glossy black dome, shovel head.
+      seg(-0.02, 0, z - 0.04 * k, 0.21, 0.18, shade);
+      seg(-0.02, 0, z, 0.2, 0.17, shell);
+      line([[0.06, 0.07, z + 0.02], [-0.14, 0.09, z + 0.02]], accent, 1.5); // gloss
+      line([[0.04, -0.05, z + 0.02], [-0.1, -0.07, z + 0.02]], C.metal4, 1);
+      line([[0.1, 0, z + 0.01], [-0.2, 0, z + 0.01]], shade, 1);
+      seg(0.13, 0, z + 0.01, 0.09, 0.14, shell);
+      seg(headAlong, headSide, z, 0.07, 0.11, shade);
+      for (let i = -2; i <= 2; i++) dot(headAlong + 0.07, headSide + i * 0.035, z + 0.01, 0.9, shell); // serrated shovel
+      eyes.push([headAlong + 0.02, headSide + 0.06], [headAlong + 0.02, headSide - 0.06]);
+      ledAt = [-0.08, 0];
+    }
+
+    // Biometric implant: the heartbeat light on every bug's back.
+    const [lx, ly] = B(ledAt[0], ledAt[1], z + 0.03);
+    if (style.empty) {
       ctx.fillStyle = C.void2;
-      ctx.beginPath(); ctx.arc(lx, ly, px(3), 0, Math.PI * 2); ctx.fill();
-    } else if (style.led != null) {
-      // Heartbeat light: faster and hotter with core heat; stutters when overheated.
+      ctx.beginPath(); ctx.arc(lx, ly, px(2.5), 0, Math.PI * 2); ctx.fill();
+    } else {
       const bpm = 60 + style.led * 120;
       const ph = (rig.time * bpm / 60) % 1;
       let on = ph < 0.12 || (ph > 0.2 && ph < 0.3);
       if (style.overheated) on = hash(Math.floor(t * 20), 1) > 0.4;
-      const [lx, ly] = P3(x - c * 0.12 * k, y - s * 0.12 * k, z + 0.02);
       const hot = style.led > 0.5 || style.overheated;
       ctx.fillStyle = on ? (hot ? C.hot1 : C.elec1) : (hot ? C.hot0 : C.elec0);
-      ctx.beginPath(); ctx.arc(lx, ly, px(3), 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(lx, ly, px(2.5), 0, Math.PI * 2); ctx.fill();
       if (on) lights.push({ x: lx, y: ly, r: 34, color: hot ? C.hot1 : C.elec1, glow: 0.35 });
     }
-    const hx = rig.headPos.x, hy = rig.headPos.y;
-    ellipsePath(hx, hy, z + 0.02 * k, hd, 0.11 * k, 0.1 * k);
-    ctx.fillStyle = style.shade; ctx.fill();
-    ellipsePath(hx, hy, z + 0.05 * k, hd, 0.1 * k, 0.09 * k);
-    ctx.fillStyle = style.shell; ctx.fill();
-    if (style.led != null) {
-      ellipsePath(hx + c * 0.06 * k, hy + s * 0.06 * k, z + 0.07 * k, hd, 0.045 * k, 0.07 * k);
-      ctx.fillStyle = style.empty ? C.void2 : C.elec1; ctx.fill();
-    }
-    if (style.led != null && !style.empty) {
-      // Head lamp: a soft pool of light ahead of the bug.
+    // Eyes glow while powered.
+    for (const [ea, es, er = 1.2, ez = z + 0.04] of eyes) dot(ea, es, ez, er, style.empty ? C.void1 : C.elec1);
+    if (!style.empty) {
+      // Light the bug and the ground ahead without tinting its colours.
       const [ex, ey] = P3(hx + c * 0.6, hy + s * 0.6, 0);
-      lights.push({ x: ex, y: ey, r: 85, color: C.elec1, glow: 0.08 });
-      // A faint glow on the bug itself, so it never vanishes in the dark.
+      lights.push({ x: ex, y: ey, r: 85, color: C.elec1, glow: 0.04 }); // head lamp
       const [bx, by] = P3(x, y, z);
-      lights.push({ x: bx, y: by, r: 55, color: C.elec1, glow: 0.12 });
+      lights.push({ x: bx, y: by, r: 60, color: C.bone, glow: 0.03 });
     }
-    ctx.strokeStyle = style.limb; ctx.lineWidth = px(1.2 * k);
-    for (const side of [-1, 1]) {
-      ctx.beginPath();
-      ctx.moveTo(...P3(hx + c * 0.07 * k - s * side * 0.04 * k, hy + s * 0.07 * k + c * side * 0.04 * k, z + 0.07 * k));
-      ctx.lineTo(...P3(hx + c * 0.24 * k - s * side * 0.13 * k, hy + s * 0.24 * k + c * side * 0.13 * k, z + 0.2 * k));
-      ctx.stroke();
-    }
-    for (const l of legs) if (depth(l) >= mid) drawLeg(rig, l, style);
+    for (const l of legs) if (depth(l) >= mid) drawLeg(rig, l, legStyle);
   }
+
+  // ---- the dung ball ----------------------------------------------------------
+  // Rolls for real: a few specks fixed on a sphere, rotated by the distance
+  // travelled about the axis across the direction of travel.
+  const ballSpin = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], x: null, y: null };
+  const SPECKS = Array.from({ length: 14 }, (_, i) => {
+    const u = hash(i, 3), v = hash(i, 4);
+    const th = u * Math.PI * 2, ph = Math.acos(2 * v - 1);
+    return [Math.sin(ph) * Math.cos(th), Math.sin(ph) * Math.sin(th), Math.cos(ph), i % 3];
+  });
+  function spinBall(b, radius) {
+    if (ballSpin.x === null) { ballSpin.x = b.x; ballSpin.y = b.y; return; }
+    const dx = b.x - ballSpin.x, dy = b.y - ballSpin.y, d = Math.hypot(dx, dy);
+    ballSpin.x = b.x; ballSpin.y = b.y;
+    if (d < 1e-6 || d > 2) return;
+    // Rotation axis: horizontal, across the motion (world z is up).
+    const ax = -dy / d, ay = dx / d, a = d / radius;
+    const ca = Math.cos(a), sa = Math.sin(a), t1 = 1 - ca;
+    const R = [ca + ax * ax * t1, ax * ay * t1, ay * sa, ay * ax * t1, ca + ay * ay * t1, -ax * sa, -ay * sa, ax * sa, ca];
+    const M = ballSpin.m, out = new Array(9);
+    for (let r = 0; r < 3; r++) for (let q = 0; q < 3; q++) out[r * 3 + q] = R[r * 3] * M[q] + R[r * 3 + 1] * M[3 + q] + R[r * 3 + 2] * M[6 + q];
+    ballSpin.m = out;
+  }
+  function drawBall(b, radius) {
+    spinBall(b, radius);
+    const X = sx(b.x, b.y), base = sy(b.x, b.y) - liftAt(b.x, b.y);
+    const R = radius * Math.SQRT2 * HW;
+    const Y = base - R * 0.9;
+    ctx.fillStyle = C.void1;
+    ctx.beginPath(); ctx.ellipse(X, base, R * 1.05, R * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+    const g = ctx.createRadialGradient(X - R * 0.35, Y - R * 0.4, R * 0.1, X, Y, R);
+    g.addColorStop(0, C.rust1); g.addColorStop(0.45, C.grime); g.addColorStop(1, C.void1);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(X, Y, R, 0, Math.PI * 2); ctx.fill();
+    // Specks of straw and grit on the visible half.
+    const M = ballSpin.m;
+    const vx = 0.5, vy = 0.5, vz = 0.707; // toward the camera
+    for (const [px0, py0, pz0, kind] of SPECKS) {
+      const wx = M[0] * px0 + M[1] * py0 + M[2] * pz0;
+      const wy = M[3] * px0 + M[4] * py0 + M[5] * pz0;
+      const wz = M[6] * px0 + M[7] * py0 + M[8] * pz0;
+      if (wx * vx + wy * vy + wz * vz < 0.15) continue;
+      const ox = (wx - wy) * Math.SQRT1_2 * R, oy = (wx + wy) * Math.SQRT1_2 * R * 0.5 - wz * R * 0.85;
+      ctx.fillStyle = kind === 0 ? C.lamp0 : kind === 1 ? C.moss2 : C.conc3;
+      ctx.fillRect(X + ox - 1, Y + oy - 1, 2, 2);
+    }
+  }
+
+  // ---- character previews (menu) ------------------------------------------------
+  // Draws one walking bug on a patch of floor into its own small canvas,
+  // snapped to the palette like the game.
+  function renderPreview(target, rig, kind, t, ball) {
+    const saved = { ctx, lights, map, baseZ, onePx, scale };
+    const pc = target.getContext('2d', { willReadFrequently: true });
+    ctx = pc; lights = []; map = null; baseZ = 0;
+    const s = 1; scale = s; onePx = 1 / s;
+    pc.setTransform(1, 0, 0, 1, 0, 0);
+    pc.fillStyle = C.void1; pc.fillRect(0, 0, target.width, target.height);
+    pc.setTransform(s, 0, 0, s, Math.round(target.width / 2), Math.round(target.height / 2 + 8));
+    for (let ty = -3; ty <= 2; ty++) for (let tx = -3; tx <= 2; tx++) drawFloor(tx, ty, t);
+    const ballFirst = ball && ball.x + ball.y < rig.pos.x + rig.pos.y;
+    if (ball && ballFirst) drawBall(ball, 0.32);
+    drawBugAt(rig, { kind, legW: 3, led: 0.15, overheated: false, empty: false }, t);
+    if (ball && !ballFirst) drawBall(ball, 0.32);
+    pc.setTransform(1, 0, 0, 1, 0, 0);
+    const img = pc.getImageData(0, 0, target.width, target.height);
+    quantize(img.data, target.width, target.height, table, 6);
+    pc.putImageData(img, 0, 0);
+    ({ ctx, lights, map, baseZ, onePx, scale } = saved);
+  }
+
 
   const SPIDER_SHELLS = [[C.beetleB1, C.beetleB0], [C.beetleA1, C.beetleA0]];
 
@@ -2370,23 +2763,28 @@ function createRenderer(canvas) {
       const rig = rigs.critters.get(c.id);
       if (rig) items.push({ d: standDepth(rig.pos.x, rig.pos.y) - (c.alive ? 0 : 0.01), k: 3, rig, i: c.id, c });
     }
+    if (p.ball) items.push({ d: standDepth(p.ball.x, p.ball.y), k: 1.5, b: p.ball });
     const pd = standDepth(pr.pos.x, pr.pos.y);
     const pz = lvAt(pr.pos.x, pr.pos.y);
     items.push({ d: pd, k: 2 });
     items.sort((a, b) => a.d - b.d || a.k - b.k);
 
+    let anyFade = false;
     for (const it of items) {
       if (it.k === 0) {
         // Columns taller than the player, in front of it, fade so it stays visible.
         const fade = it.d > pd && it.top > pz + 0.2 && hidesPlayer(it.tx, it.ty, pr, it.top * LEVEL_PX);
+        anyFade ||= fade;
         if (map.solid[it.ty * map.w + it.tx]) drawWall(it.tx, it.ty, t, fade ? 0.35 : 1);
         else drawColumn(it.tx, it.ty, t, fade ? 0.35 : 1);
       } else if (it.k === 0.5) drawVent(it.v, t, dt);
       else if (it.k === 1) drawCell(it.s, t);
+      else if (it.k === 1.5) drawBall(it.b, rigs.ballRadius || 0.32);
       else if (it.k === 3) drawSpider(it.rig, it.c, it.i, t);
       else {
         const empty = p.charges <= 0;
         drawBug(pr, {
+          kind: rigs.kind,
           shell: empty ? C.hull0 : C.hull1, shade: empty ? C.metal1 : C.hull0, limb: C.limb,
           legW: 3, led: p.heat, overheated: p.overheated, empty,
         }, t);
@@ -2402,11 +2800,13 @@ function createRenderer(canvas) {
       drawArc(ra, rb, t, 1 - c.stateTime / Math.max(1e-6, c.stateTotal));
     }
 
-    // Outline on top so the player stays visible behind walls.
-    baseZ = pz * LEVEL_Z;
-    ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight, pr.heading, 0.26, 0.16);
-    baseZ = 0;
-    ctx.globalAlpha = 0.5; ctx.strokeStyle = C.metal4; ctx.lineWidth = px(1); ctx.stroke(); ctx.globalAlpha = 1;
+    // Outline on top while a wall in front is faded, so the player stays visible.
+    if (anyFade) {
+      baseZ = pz * LEVEL_Z;
+      ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight * pr.opts.scale, pr.heading, 0.26 * pr.opts.scale, 0.16 * pr.opts.scale);
+      baseZ = 0;
+      ctx.globalAlpha = 0.5; ctx.strokeStyle = C.metal4; ctx.lineWidth = px(1); ctx.stroke(); ctx.globalAlpha = 1;
+    }
 
     for (const q of fx.particles) {
       ctx.globalAlpha = Math.max(0, Math.min(1, q.life));
@@ -2460,6 +2860,8 @@ function createRenderer(canvas) {
   return {
     resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals,
     ventPuff: (v) => ventPuff(v, 14),
+    renderPreview,
+    resetBall: () => { ballSpin.x = null; ballSpin.m = [1, 0, 0, 0, 1, 0, 0, 0, 1]; },
     bigBurst: (x, y) => { burst(x, y); burst(x, y); },
     screenOf: (x, y) => ({ x: sx(x, y), y: sy(x, y) - liftAt(x, y) }),
     get size() { return { w, h }; },
@@ -2470,15 +2872,11 @@ function createRenderer(canvas) {
 // Browser entry: fixed-timestep loop, input, HUD and the tunables panel.
 
 const VIEW_DEFAULTS = { zoom: 1, camLag: 0.12 };
-// Body-motion presets. "Robot" is the setup from the procedural-animation
-// video (zeta 0.5, r -2: underdamped with anticipation).
-const MOTION_PRESETS = {
-  Default: { bodyF: 3, bodyZeta: 0.5, bodyR: 1 },
-  Robot: { bodyF: 2, bodyZeta: 0.5, bodyR: -2 },
-  Snappy: { bodyF: 6, bodyZeta: 1, bodyR: 0 },
-  Springy: { bodyF: 2.5, bodyZeta: 0.25, bodyR: 2 },
-  Heavy: { bodyF: 1.2, bodyZeta: 1.2, bodyR: 0 },
-};
+// Body-motion presets now belong to the playable bugs (src/characters.js).
+// "Robot" (the mantis) is the setup from the procedural-animation video
+// (zeta 0.5, r -2: underdamped with anticipation).
+const CHAR_KEY = 'biometric.character.v1';
+const charRig = (ch) => ({ ...RIG_DEFAULTS, ...ch.rig, ...ch.motion });
 
 // Slider ranges for every tunable. `group` decides where it shows in the panel.
 const TUNABLES = [
@@ -2519,7 +2917,11 @@ function start(snapshot) {
   const stored = snapshot?.tune ?? load(STORE_KEY) ?? {};
   const params = { ...DEFAULT_PARAMS, ...stored.params };
   const view = { ...VIEW_DEFAULTS, ...stored.view, camX: 0, camY: 0, alpha: 0 };
-  const rigOpts = { ...RIG_DEFAULTS, ...stored.rig };
+  let character = characterById(snapshot?.character ?? load(CHAR_KEY));
+  // Motion tweaks from the panel are kept only for the bug they were made on.
+  const rigOpts = { ...charRig(character), ...(stored.rigFor === character.id ? stored.rig : {}) };
+  // What the simulation runs with: tunables plus the bug's own mechanics.
+  const simParams = () => ({ ...params, ...character.params });
   const look = { ...LOOK_DEFAULTS, ...stored.look };
   let best = load(BEST_KEY) ?? {};
 
@@ -2527,7 +2929,7 @@ function start(snapshot) {
   const canvas = $('game');
   const renderer = createRenderer(canvas);
   let levelIndex = 0;
-  let state = createState(LEVELS[levelIndex]);
+  let state = createState(LEVELS[levelIndex], 1, simParams());
   // Where a bug's foot may land: not on a wall, and not on ground at another
   // level than the body (no feet dangling down cliffs). Steps and ramps are fine.
   const footBlocked = (rig) => (x, y) => isSolid(state.map, Math.floor(x), Math.floor(y))
@@ -2538,7 +2940,10 @@ function start(snapshot) {
     rigs = {
       player: createRig(p.x, p.y, Math.atan2(p.faceY, p.faceX), { ...rigOpts }),
       critters: new Map(), // by spider id; spiders come and go
+      kind: character.kind,
+      ballRadius: params.ballRadius,
     };
+    renderer.resetBall();
     syncSpiderRigs();
     renderer.resetDecals(state.map);
   }
@@ -2560,7 +2965,7 @@ function start(snapshot) {
     view.camX = s.x; view.camY = s.y - 10;
   }
   function restart() {
-    state = createState(LEVELS[levelIndex], (Date.now() >>> 0) || 1);
+    state = createState(LEVELS[levelIndex], (Date.now() >>> 0) || 1, simParams());
     makeRigs();
     centreCamera();
     $('win').hidden = true;
@@ -2575,12 +2980,84 @@ function start(snapshot) {
     ArrowUp: 'u', KeyW: 'u', ArrowDown: 'd', KeyS: 'd',
   };
   function begin() {
-    if (started) return;
+    if (started || menuOpen) return;
     started = true;
-    $('intro').hidden = true;
   }
+
+  // ---- character select ---------------------------------------------------
+  let menuOpen = true; // the game opens on the character select
+  const grid = $('char-grid');
+  const previews = CHARACTERS.map((ch) => {
+    const card = document.createElement('button');
+    card.type = 'button'; card.className = 'char'; card.dataset.id = ch.id;
+    card.innerHTML = `<canvas width="120" height="76" aria-hidden="true"></canvas>
+      <span class="cname"></span><span class="clatin"></span><span class="cpreset"></span><span class="cblurb"></span>`;
+    card.querySelector('.cname').textContent = ch.name;
+    card.querySelector('.clatin').textContent = ch.latin;
+    card.querySelector('.cpreset').textContent = `Motion: ${ch.preset}`;
+    card.querySelector('.cblurb').textContent = ch.blurb;
+    card.addEventListener('click', () => chooseCharacter(ch.id));
+    grid.append(card);
+    const rig = createRig(0, 0, 0, charRig(ch));
+    return { ch, card, canvas: card.querySelector('canvas'), rig, ball: ch.params.mech === 'ball' ? { x: 0, y: 0 } : null };
+  });
+  function markChosen() {
+    for (const pv of previews) pv.card.setAttribute('aria-pressed', String(pv.ch.id === character.id));
+    $('bug-btn').textContent = `Bug: ${character.name}`;
+  }
+  function openMenu() {
+    menuOpen = true;
+    $('chars').hidden = false;
+    keys.clear();
+    previews.find((pv) => pv.ch.id === character.id)?.card.focus();
+  }
+  function closeMenu() {
+    menuOpen = false;
+    $('chars').hidden = true;
+    last = performance.now(); acc = 0;
+  }
+  function chooseCharacter(id) {
+    const changed = id !== character.id;
+    character = characterById(id);
+    save(CHAR_KEY, character.id);
+    if (changed) { Object.keys(rigOpts).forEach((k) => delete rigOpts[k]); Object.assign(rigOpts, charRig(character)); persist(); buildPanel(); }
+    markChosen();
+    closeMenu();
+    restart();
+    started = true;
+  }
+  // Each card shows its bug walking a small loop; the dung beetle chases its ball.
+  function animatePreviews(dt, t) {
+    for (const [i, pv] of previews.entries()) {
+      const a = t * 0.9 + i;
+      // A small loop that fits the card at preview scale.
+      const r = 0.55, x = Math.cos(a) * r, y = Math.sin(a) * r;
+      const vx = -Math.sin(a) * r * 0.9, vy = Math.cos(a) * r * 0.9;
+      updateRig(pv.rig, Math.min(dt, 0.05), { x, y, vx, vy });
+      if (pv.ball) {
+        const sp = Math.hypot(vx, vy) || 1, gap = params.radius + params.ballRadius;
+        pv.ball.x = pv.rig.pos.x + (vx / sp) * gap; pv.ball.y = pv.rig.pos.y + (vy / sp) * gap;
+      }
+      renderer.renderPreview(pv.canvas, pv.rig, pv.ch.kind, t, pv.ball);
+    }
+  }
+  $('bug-btn').addEventListener('click', () => openMenu());
+  grid.addEventListener('keydown', (e) => {
+    const cards = previews.map((pv) => pv.card);
+    const i = cards.indexOf(document.activeElement);
+    if (i < 0) return;
+    const cols = getComputedStyle(grid).gridTemplateColumns.split(' ').length;
+    const move = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols, ArrowUp: -cols }[e.code];
+    if (move) { cards[(i + move + cards.length) % cards.length].focus(); e.preventDefault(); e.stopPropagation(); }
+  });
+
   window.addEventListener('keydown', (e) => {
     if (e.target.closest?.('#panel')) return;
+    if (menuOpen) {
+      if (e.code === 'Escape' && started) closeMenu();
+      return;
+    }
+    if (e.code === 'KeyC') { openMenu(); e.preventDefault(); return; }
     if (KEYMAP[e.code]) { keys.add(KEYMAP[e.code]); e.preventDefault(); begin(); }
     if ((e.code === 'Space' || e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyJ') && !e.repeat) {
       dashQueued = true; e.preventDefault(); begin();
@@ -2622,7 +3099,6 @@ function start(snapshot) {
   canvas.addEventListener('pointerup', endStick);
   canvas.addEventListener('pointercancel', endStick);
   $('dash-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); dashQueued = true; begin(); });
-  $('intro').addEventListener('pointerdown', begin);
 
   let padDashWas = false;
   function readInput() {
@@ -2657,7 +3133,7 @@ function start(snapshot) {
   function tuneData() {
     const rig = {};
     for (const t of TUNABLES) if (t.rig) rig[t.key] = rigOpts[t.key];
-    return { params, view: { zoom: view.zoom, camLag: view.camLag }, rig, look };
+    return { params, view: { zoom: view.zoom, camLag: view.camLag }, rig, rigFor: character.id, look };
   }
   const holder = (t) => (t.view ? view : t.rig ? rigOpts : t.look ? look : params);
   function valueOf(t) { return holder(t)[t.key]; }
@@ -2706,13 +3182,11 @@ function start(snapshot) {
     box.innerHTML = `<canvas id="response" width="536" height="200" aria-label="Step response plot"></canvas>
       <p class="note">How the body catches up when its target jumps. Dashed line = target. Above it is overshoot, below zero is anticipation.</p>
       <div class="presets"></div>`;
-    const pre = box.querySelector('.presets');
-    for (const [name, values] of Object.entries(MOTION_PRESETS)) {
-      const b = document.createElement('button');
-      b.type = 'button'; b.className = 'btn chip'; b.textContent = name;
-      b.addEventListener('click', () => { Object.assign(rigOpts, values); persist(); buildPanel(); });
-      pre.append(b);
-    }
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn chip';
+    b.textContent = `Reset to ${character.name} (${character.preset})`;
+    b.addEventListener('click', () => { Object.assign(rigOpts, charRig(character)); persist(); buildPanel(); });
+    box.querySelector('.presets').append(b);
     return box;
   }
   function drawResponse() {
@@ -2766,7 +3240,7 @@ function start(snapshot) {
   $('reset-tune').addEventListener('click', () => {
     Object.assign(params, DEFAULT_PARAMS);
     Object.assign(view, VIEW_DEFAULTS);
-    Object.assign(rigOpts, RIG_DEFAULTS);
+    Object.assign(rigOpts, charRig(character));
     Object.assign(look, LOOK_DEFAULTS);
     persist(); buildPanel();
     flash('Back to the spec defaults');
@@ -2843,8 +3317,7 @@ function start(snapshot) {
     state.events.length = 0;
   }
 
-  const WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen', 'Twenty'];
-  $('intro-count').textContent = WORDS[state.shards.length] ?? String(state.shards.length);
+  markChosen();
 
   // ---- loop --------------------------------------------------------------
   function resize() { renderer.resize(); }
@@ -2861,11 +3334,13 @@ function start(snapshot) {
     const dt = Math.min(0.25, (now - last) / 1000);
     last = now;
     clock += dt;
-    if (started) {
+    if (menuOpen) animatePreviews(dt, clock);
+    if (started && !menuOpen) {
       acc += dt;
       let input = readInput();
+      const sp = simParams();
       while (acc >= STEP) {
-        step(state, input, params);
+        step(state, input, sp);
         input = { ...input, dash: false }; // a press counts once
         acc -= STEP;
       }
@@ -2910,7 +3385,7 @@ function start(snapshot) {
   }
   requestAnimationFrame(frame);
 
-  window.claude?.hot?.snapshot?.(() => ({ tune: tuneData() }));
+  window.claude?.hot?.snapshot?.(() => ({ tune: tuneData(), character: character.id }));
   // Test hook: open the page with #debug to reach the live state from a script.
   if (location.hash === '#debug') window.biometricDebug = { get state() { return state; }, params, look, view, events: eventLog };
 }

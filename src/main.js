@@ -5,17 +5,14 @@ import { LEVELS } from './levels.js';
 import { createRig, updateRig, setRigMotion, RIG_DEFAULTS, SPIDER_RIG } from './bug.js';
 import { stepResponse } from './dynamics.js';
 import { createVitals } from './vitals.js';
+import { CHARACTERS, characterById } from './characters.js';
 
 const VIEW_DEFAULTS = { zoom: 1, camLag: 0.12 };
-// Body-motion presets. "Robot" is the setup from the procedural-animation
-// video (zeta 0.5, r -2: underdamped with anticipation).
-const MOTION_PRESETS = {
-  Default: { bodyF: 3, bodyZeta: 0.5, bodyR: 1 },
-  Robot: { bodyF: 2, bodyZeta: 0.5, bodyR: -2 },
-  Snappy: { bodyF: 6, bodyZeta: 1, bodyR: 0 },
-  Springy: { bodyF: 2.5, bodyZeta: 0.25, bodyR: 2 },
-  Heavy: { bodyF: 1.2, bodyZeta: 1.2, bodyR: 0 },
-};
+// Body-motion presets now belong to the playable bugs (src/characters.js).
+// "Robot" (the mantis) is the setup from the procedural-animation video
+// (zeta 0.5, r -2: underdamped with anticipation).
+const CHAR_KEY = 'biometric.character.v1';
+const charRig = (ch) => ({ ...RIG_DEFAULTS, ...ch.rig, ...ch.motion });
 
 // Slider ranges for every tunable. `group` decides where it shows in the panel.
 const TUNABLES = [
@@ -56,7 +53,11 @@ function start(snapshot) {
   const stored = snapshot?.tune ?? load(STORE_KEY) ?? {};
   const params = { ...DEFAULT_PARAMS, ...stored.params };
   const view = { ...VIEW_DEFAULTS, ...stored.view, camX: 0, camY: 0, alpha: 0 };
-  const rigOpts = { ...RIG_DEFAULTS, ...stored.rig };
+  let character = characterById(snapshot?.character ?? load(CHAR_KEY));
+  // Motion tweaks from the panel are kept only for the bug they were made on.
+  const rigOpts = { ...charRig(character), ...(stored.rigFor === character.id ? stored.rig : {}) };
+  // What the simulation runs with: tunables plus the bug's own mechanics.
+  const simParams = () => ({ ...params, ...character.params });
   const look = { ...LOOK_DEFAULTS, ...stored.look };
   let best = load(BEST_KEY) ?? {};
 
@@ -64,7 +65,7 @@ function start(snapshot) {
   const canvas = $('game');
   const renderer = createRenderer(canvas);
   let levelIndex = 0;
-  let state = createState(LEVELS[levelIndex]);
+  let state = createState(LEVELS[levelIndex], 1, simParams());
   // Where a bug's foot may land: not on a wall, and not on ground at another
   // level than the body (no feet dangling down cliffs). Steps and ramps are fine.
   const footBlocked = (rig) => (x, y) => isSolid(state.map, Math.floor(x), Math.floor(y))
@@ -75,7 +76,10 @@ function start(snapshot) {
     rigs = {
       player: createRig(p.x, p.y, Math.atan2(p.faceY, p.faceX), { ...rigOpts }),
       critters: new Map(), // by spider id; spiders come and go
+      kind: character.kind,
+      ballRadius: params.ballRadius,
     };
+    renderer.resetBall();
     syncSpiderRigs();
     renderer.resetDecals(state.map);
   }
@@ -97,7 +101,7 @@ function start(snapshot) {
     view.camX = s.x; view.camY = s.y - 10;
   }
   function restart() {
-    state = createState(LEVELS[levelIndex], (Date.now() >>> 0) || 1);
+    state = createState(LEVELS[levelIndex], (Date.now() >>> 0) || 1, simParams());
     makeRigs();
     centreCamera();
     $('win').hidden = true;
@@ -112,12 +116,84 @@ function start(snapshot) {
     ArrowUp: 'u', KeyW: 'u', ArrowDown: 'd', KeyS: 'd',
   };
   function begin() {
-    if (started) return;
+    if (started || menuOpen) return;
     started = true;
-    $('intro').hidden = true;
   }
+
+  // ---- character select ---------------------------------------------------
+  let menuOpen = true; // the game opens on the character select
+  const grid = $('char-grid');
+  const previews = CHARACTERS.map((ch) => {
+    const card = document.createElement('button');
+    card.type = 'button'; card.className = 'char'; card.dataset.id = ch.id;
+    card.innerHTML = `<canvas width="120" height="76" aria-hidden="true"></canvas>
+      <span class="cname"></span><span class="clatin"></span><span class="cpreset"></span><span class="cblurb"></span>`;
+    card.querySelector('.cname').textContent = ch.name;
+    card.querySelector('.clatin').textContent = ch.latin;
+    card.querySelector('.cpreset').textContent = `Motion: ${ch.preset}`;
+    card.querySelector('.cblurb').textContent = ch.blurb;
+    card.addEventListener('click', () => chooseCharacter(ch.id));
+    grid.append(card);
+    const rig = createRig(0, 0, 0, charRig(ch));
+    return { ch, card, canvas: card.querySelector('canvas'), rig, ball: ch.params.mech === 'ball' ? { x: 0, y: 0 } : null };
+  });
+  function markChosen() {
+    for (const pv of previews) pv.card.setAttribute('aria-pressed', String(pv.ch.id === character.id));
+    $('bug-btn').textContent = `Bug: ${character.name}`;
+  }
+  function openMenu() {
+    menuOpen = true;
+    $('chars').hidden = false;
+    keys.clear();
+    previews.find((pv) => pv.ch.id === character.id)?.card.focus();
+  }
+  function closeMenu() {
+    menuOpen = false;
+    $('chars').hidden = true;
+    last = performance.now(); acc = 0;
+  }
+  function chooseCharacter(id) {
+    const changed = id !== character.id;
+    character = characterById(id);
+    save(CHAR_KEY, character.id);
+    if (changed) { Object.keys(rigOpts).forEach((k) => delete rigOpts[k]); Object.assign(rigOpts, charRig(character)); persist(); buildPanel(); }
+    markChosen();
+    closeMenu();
+    restart();
+    started = true;
+  }
+  // Each card shows its bug walking a small loop; the dung beetle chases its ball.
+  function animatePreviews(dt, t) {
+    for (const [i, pv] of previews.entries()) {
+      const a = t * 0.9 + i;
+      // A small loop that fits the card at preview scale.
+      const r = 0.55, x = Math.cos(a) * r, y = Math.sin(a) * r;
+      const vx = -Math.sin(a) * r * 0.9, vy = Math.cos(a) * r * 0.9;
+      updateRig(pv.rig, Math.min(dt, 0.05), { x, y, vx, vy });
+      if (pv.ball) {
+        const sp = Math.hypot(vx, vy) || 1, gap = params.radius + params.ballRadius;
+        pv.ball.x = pv.rig.pos.x + (vx / sp) * gap; pv.ball.y = pv.rig.pos.y + (vy / sp) * gap;
+      }
+      renderer.renderPreview(pv.canvas, pv.rig, pv.ch.kind, t, pv.ball);
+    }
+  }
+  $('bug-btn').addEventListener('click', () => openMenu());
+  grid.addEventListener('keydown', (e) => {
+    const cards = previews.map((pv) => pv.card);
+    const i = cards.indexOf(document.activeElement);
+    if (i < 0) return;
+    const cols = getComputedStyle(grid).gridTemplateColumns.split(' ').length;
+    const move = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols, ArrowUp: -cols }[e.code];
+    if (move) { cards[(i + move + cards.length) % cards.length].focus(); e.preventDefault(); e.stopPropagation(); }
+  });
+
   window.addEventListener('keydown', (e) => {
     if (e.target.closest?.('#panel')) return;
+    if (menuOpen) {
+      if (e.code === 'Escape' && started) closeMenu();
+      return;
+    }
+    if (e.code === 'KeyC') { openMenu(); e.preventDefault(); return; }
     if (KEYMAP[e.code]) { keys.add(KEYMAP[e.code]); e.preventDefault(); begin(); }
     if ((e.code === 'Space' || e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyJ') && !e.repeat) {
       dashQueued = true; e.preventDefault(); begin();
@@ -159,7 +235,6 @@ function start(snapshot) {
   canvas.addEventListener('pointerup', endStick);
   canvas.addEventListener('pointercancel', endStick);
   $('dash-btn').addEventListener('pointerdown', (e) => { e.preventDefault(); dashQueued = true; begin(); });
-  $('intro').addEventListener('pointerdown', begin);
 
   let padDashWas = false;
   function readInput() {
@@ -194,7 +269,7 @@ function start(snapshot) {
   function tuneData() {
     const rig = {};
     for (const t of TUNABLES) if (t.rig) rig[t.key] = rigOpts[t.key];
-    return { params, view: { zoom: view.zoom, camLag: view.camLag }, rig, look };
+    return { params, view: { zoom: view.zoom, camLag: view.camLag }, rig, rigFor: character.id, look };
   }
   const holder = (t) => (t.view ? view : t.rig ? rigOpts : t.look ? look : params);
   function valueOf(t) { return holder(t)[t.key]; }
@@ -243,13 +318,11 @@ function start(snapshot) {
     box.innerHTML = `<canvas id="response" width="536" height="200" aria-label="Step response plot"></canvas>
       <p class="note">How the body catches up when its target jumps. Dashed line = target. Above it is overshoot, below zero is anticipation.</p>
       <div class="presets"></div>`;
-    const pre = box.querySelector('.presets');
-    for (const [name, values] of Object.entries(MOTION_PRESETS)) {
-      const b = document.createElement('button');
-      b.type = 'button'; b.className = 'btn chip'; b.textContent = name;
-      b.addEventListener('click', () => { Object.assign(rigOpts, values); persist(); buildPanel(); });
-      pre.append(b);
-    }
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn chip';
+    b.textContent = `Reset to ${character.name} (${character.preset})`;
+    b.addEventListener('click', () => { Object.assign(rigOpts, charRig(character)); persist(); buildPanel(); });
+    box.querySelector('.presets').append(b);
     return box;
   }
   function drawResponse() {
@@ -303,7 +376,7 @@ function start(snapshot) {
   $('reset-tune').addEventListener('click', () => {
     Object.assign(params, DEFAULT_PARAMS);
     Object.assign(view, VIEW_DEFAULTS);
-    Object.assign(rigOpts, RIG_DEFAULTS);
+    Object.assign(rigOpts, charRig(character));
     Object.assign(look, LOOK_DEFAULTS);
     persist(); buildPanel();
     flash('Back to the spec defaults');
@@ -380,8 +453,7 @@ function start(snapshot) {
     state.events.length = 0;
   }
 
-  const WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen', 'Twenty'];
-  $('intro-count').textContent = WORDS[state.shards.length] ?? String(state.shards.length);
+  markChosen();
 
   // ---- loop --------------------------------------------------------------
   function resize() { renderer.resize(); }
@@ -398,11 +470,13 @@ function start(snapshot) {
     const dt = Math.min(0.25, (now - last) / 1000);
     last = now;
     clock += dt;
-    if (started) {
+    if (menuOpen) animatePreviews(dt, clock);
+    if (started && !menuOpen) {
       acc += dt;
       let input = readInput();
+      const sp = simParams();
       while (acc >= STEP) {
-        step(state, input, params);
+        step(state, input, sp);
         input = { ...input, dash: false }; // a press counts once
         acc -= STEP;
       }
@@ -447,7 +521,7 @@ function start(snapshot) {
   }
   requestAnimationFrame(frame);
 
-  window.claude?.hot?.snapshot?.(() => ({ tune: tuneData() }));
+  window.claude?.hot?.snapshot?.(() => ({ tune: tuneData(), character: character.id }));
   // Test hook: open the page with #debug to reach the live state from a script.
   if (location.hash === '#debug') window.biometricDebug = { get state() { return state; }, params, look, view, events: eventLog };
 }

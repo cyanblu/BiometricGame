@@ -27,7 +27,7 @@ export function createRenderer(canvas) {
   const out = canvas.getContext('2d');
   const low = document.createElement('canvas');
   const light = document.createElement('canvas');
-  const ctx = low.getContext('2d', { willReadFrequently: true });
+  let ctx = low.getContext('2d', { willReadFrequently: true }); // swapped while drawing menu previews
   const lctx = light.getContext('2d');
   const table = buildLut();
   const fx = { particles: [], trail: [], drops: [] };
@@ -484,69 +484,227 @@ export function createRenderer(canvas) {
     baseZ = 0;
   }
 
+  // Shell colours per playable bug: [shell, shade, accent, limb].
+  const KIND_COLORS = {
+    cowboy: [C.rust0, C.void2, C.bone, C.limb],
+    stag: [C.beetleB1, C.beetleB0, C.rust2, C.limb],
+    jumper: [C.hull1, C.hull0, C.void1, C.void1],
+    harvestman: [C.rust1, C.rust0, C.lamp0, C.rust1],
+    mantis: [C.moss3, C.moss2, C.cell0, C.moss2],
+    dung: [C.void2, C.void0, C.metal3, C.void1],
+  };
+
+  // Draws a playable bug; style.kind picks the species.
   function drawBugAt(rig, style, t) {
     const o = rig.opts, k = o.scale;
     const { x, y } = rig.pos, hd = rig.heading;
     const z = o.bodyHeight * k;
-    ellipsePath(x, y, 0, hd, 0.3 * k, 0.2 * k);
+    const c = Math.cos(hd), s = Math.sin(hd);
+    const kind = style.kind || 'cowboy';
+    let [shell, shade, accent, limb] = KIND_COLORS[kind];
+    if (style.empty) { shell = shade; accent = C.metal1; } // out of charge: dull and dark
+    const legStyle = { ...style, shade, limb, legW: kind === 'harvestman' ? 1.6 : kind === 'mantis' ? 2 : style.legW };
+    // Point in the bug's frame: along its heading, to its side, at a height.
+    const B = (along, side, zz) => P3(x + (c * along - s * side) * k, y + (s * along + c * side) * k, zz);
+    const seg = (along, side, zz, a, b, color) => {
+      ellipsePath(x + (c * along - s * side) * k, y + (s * along + c * side) * k, zz, hd, a * k, b * k);
+      ctx.fillStyle = color; ctx.fill();
+    };
+    const line = (pts, color, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = px(width); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath(); pts.forEach((q, i) => (i ? ctx.lineTo(...B(...q)) : ctx.moveTo(...B(...q)))); ctx.stroke();
+    };
+    const dot = (along, side, zz, r, color) => {
+      const [qx, qy] = B(along, side, zz);
+      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(qx, qy, px(r), 0, Math.PI * 2); ctx.fill();
+    };
+
+    // Shadow and far legs.
+    ellipsePath(x, y, 0, hd, (kind === 'harvestman' ? 0.16 : 0.3) * k, (kind === 'harvestman' ? 0.14 : 0.2) * k);
     ctx.fillStyle = C.void1; ctx.fill();
     const depth = (l) => { const hp = hipOf(rig, l); return hp.x + hp.y; };
     const mid = x + y;
     const legs = [...rig.legs].sort((a, b) => depth(a) - depth(b));
-    for (const l of legs) if (depth(l) < mid) drawLeg(rig, l, style);
-    ellipsePath(x, y, z - 0.05 * k, hd, 0.27 * k, 0.17 * k);
-    ctx.fillStyle = style.shade; ctx.fill();
-    ellipsePath(x, y, z, hd, 0.26 * k, 0.16 * k);
-    ctx.fillStyle = style.shell; ctx.fill();
-    const c = Math.cos(hd), s = Math.sin(hd);
-    ctx.strokeStyle = style.shade; ctx.lineWidth = px(1.5 * k);
-    ctx.beginPath();
-    ctx.moveTo(...P3(x + c * 0.2 * k, y + s * 0.2 * k, z + 0.01));
-    ctx.lineTo(...P3(x - c * 0.24 * k, y - s * 0.24 * k, z + 0.01));
-    ctx.stroke();
-    if (style.led != null && style.empty) {
-      // Out of charges: the light is dead, not blinking.
-      const [lx, ly] = P3(x - c * 0.12 * k, y - s * 0.12 * k, z + 0.02);
+    for (const l of legs) if (depth(l) < mid) drawLeg(rig, l, legStyle);
+
+    // Head position relative to the body (the head lags on its own follower).
+    const hx = rig.headPos.x, hy = rig.headPos.y;
+    const headAlong = ((hx - x) * c + (hy - y) * s) / k, headSide = (-(hx - x) * s + (hy - y) * c) / k;
+    let ledAt = [-0.12, 0];
+    const eyes = [];
+
+    if (kind === 'cowboy') {
+      // Flower chafer: dark shell with cream margins and a cream mid-line.
+      seg(-0.05, 0, z - 0.05 * k, 0.28, 0.2, shade);
+      seg(-0.05, 0, z, 0.27, 0.19, shell);
+      ctx.strokeStyle = accent; ctx.lineWidth = px(2);
+      ellipsePath(x - c * 0.05 * k, y - s * 0.05 * k, z + 0.005, hd, 0.22 * k, 0.15 * k); ctx.stroke();
+      line([[0.12, 0, z + 0.01], [-0.24, 0, z + 0.01]], accent, 1.5);
+      seg(0.17, 0, z + 0.01, 0.1, 0.15, shade);
+      seg(0.17, 0, z + 0.02, 0.09, 0.14, shell);
+      dot(0.2, 0.08, z + 0.03, 1, accent); dot(0.2, -0.08, z + 0.03, 1, accent);
+      seg(headAlong, headSide, z, 0.06, 0.07, shell);
+      for (const sd of [-1, 1]) line([[headAlong + 0.04, headSide + sd * 0.03, z + 0.03], [headAlong + 0.12, headSide + sd * 0.09, z + 0.07]], limb, 1);
+      eyes.push([headAlong + 0.04, headSide + 0.04], [headAlong + 0.04, headSide - 0.04]);
+      ledAt = [-0.1, 0];
+    } else if (kind === 'stag') {
+      // Stag beetle: chestnut wing cases, black thorax, wide head and antlers.
+      seg(-0.1, 0, z - 0.05 * k, 0.29, 0.18, shade);
+      seg(-0.1, 0, z, 0.28, 0.17, shell);
+      line([[0.12, 0, z + 0.01], [-0.36, 0, z + 0.01]], shade, 1);
+      line([[0.05, 0.08, z + 0.02], [-0.25, 0.1, z + 0.02]], accent, 1); // sheen
+      seg(0.15, 0, z, 0.1, 0.16, C.void1);
+      seg(0.15, 0, z + 0.015, 0.09, 0.15, C.void2);
+      seg(headAlong, headSide, z + 0.01, 0.08, 0.14, C.void2);
+      for (const sd of [-1, 1]) {
+        const h0 = [headAlong + 0.05, headSide + sd * 0.07, z + 0.03];
+        line([h0, [headAlong + 0.2, headSide + sd * 0.15, z + 0.06], [headAlong + 0.33, headSide + sd * 0.04, z + 0.05]], accent, 3);
+        line([[headAlong + 0.2, headSide + sd * 0.14, z + 0.06], [headAlong + 0.22, headSide + sd * 0.07, z + 0.05]], accent, 1.5); // tine
+      }
+      eyes.push([headAlong + 0.02, headSide + 0.1], [headAlong + 0.02, headSide - 0.1]);
+      ledAt = [-0.18, 0];
+    } else if (kind === 'jumper') {
+      // Jumping spider: striped abdomen, pale head with four big front eyes.
+      seg(-0.16, 0, z - 0.04 * k, 0.18, 0.15, shade);
+      seg(-0.16, 0, z, 0.17, 0.14, shell);
+      for (const f of [-0.08, -0.16, -0.24]) line([[f, -0.08, z + 0.01], [f - 0.04, 0, z + 0.015], [f, 0.08, z + 0.01]], accent, 1.2);
+      seg(0.07, 0, z, 0.12, 0.11, shade);
+      seg(0.07, 0, z + 0.015, 0.11, 0.1, C.hull2);
+      eyes.push([0.17, 0.04, 2.2], [0.17, -0.04, 2.2], [0.15, 0.08, 1], [0.15, -0.08, 1]);
+      ledAt = [-0.16, 0];
+    } else if (kind === 'harvestman') {
+      // Daddy longlegs: a small round body with a darker saddle and an eye turret.
+      seg(0, 0, z - 0.03 * k, 0.12, 0.11, shade);
+      seg(0, 0, z, 0.11, 0.1, shell);
+      seg(-0.01, 0, z + 0.01, 0.06, 0.05, shade);
+      dot(0.05, 0, z + 0.05, 1.6, accent);
+      eyes.push([0.06, 0.015, 0.9], [0.06, -0.015, 0.9]);
+      ledAt = [-0.04, 0];
+    } else if (kind === 'mantis') {
+      // Mantis: long segmented abdomen, thin thorax, triangular head, folded arms.
+      seg(-0.24, 0, z - 0.03 * k, 0.29, 0.11, shade);
+      seg(-0.24, 0, z, 0.28, 0.1, shell);
+      for (const f of [-0.1, -0.18, -0.26, -0.34, -0.42]) line([[f, -0.08, z + 0.01], [f, 0.08, z + 0.01]], shade, 1);
+      line([[-0.02, 0, z + 0.02], [0.3, 0, z + 0.12]], shell, 5);
+      seg(headAlong, headSide, z + 0.13, 0.06, 0.1, accent);
+      for (const sd of [-1, 1]) {
+        // Raptorial forelegs, folded as if praying.
+        line([[0.22, sd * 0.03, z + 0.09], [0.34, sd * 0.06, z + 0.16], [0.3, sd * 0.03, z + 0.03]], accent, 2.2);
+        line([[headAlong + 0.03, headSide + sd * 0.03, z + 0.15], [headAlong + 0.2, headSide + sd * 0.12, z + 0.26]], limb, 1);
+      }
+      eyes.push([headAlong + 0.01, headSide + 0.06, 1.3, z + 0.13], [headAlong + 0.01, headSide - 0.06, 1.3, z + 0.13]);
+      ledAt = [-0.18, 0];
+    } else {
+      // Dung beetle: glossy black dome, shovel head.
+      seg(-0.02, 0, z - 0.04 * k, 0.21, 0.18, shade);
+      seg(-0.02, 0, z, 0.2, 0.17, shell);
+      line([[0.06, 0.07, z + 0.02], [-0.14, 0.09, z + 0.02]], accent, 1.5); // gloss
+      line([[0.04, -0.05, z + 0.02], [-0.1, -0.07, z + 0.02]], C.metal4, 1);
+      line([[0.1, 0, z + 0.01], [-0.2, 0, z + 0.01]], shade, 1);
+      seg(0.13, 0, z + 0.01, 0.09, 0.14, shell);
+      seg(headAlong, headSide, z, 0.07, 0.11, shade);
+      for (let i = -2; i <= 2; i++) dot(headAlong + 0.07, headSide + i * 0.035, z + 0.01, 0.9, shell); // serrated shovel
+      eyes.push([headAlong + 0.02, headSide + 0.06], [headAlong + 0.02, headSide - 0.06]);
+      ledAt = [-0.08, 0];
+    }
+
+    // Biometric implant: the heartbeat light on every bug's back.
+    const [lx, ly] = B(ledAt[0], ledAt[1], z + 0.03);
+    if (style.empty) {
       ctx.fillStyle = C.void2;
-      ctx.beginPath(); ctx.arc(lx, ly, px(3), 0, Math.PI * 2); ctx.fill();
-    } else if (style.led != null) {
-      // Heartbeat light: faster and hotter with core heat; stutters when overheated.
+      ctx.beginPath(); ctx.arc(lx, ly, px(2.5), 0, Math.PI * 2); ctx.fill();
+    } else {
       const bpm = 60 + style.led * 120;
       const ph = (rig.time * bpm / 60) % 1;
       let on = ph < 0.12 || (ph > 0.2 && ph < 0.3);
       if (style.overheated) on = hash(Math.floor(t * 20), 1) > 0.4;
-      const [lx, ly] = P3(x - c * 0.12 * k, y - s * 0.12 * k, z + 0.02);
       const hot = style.led > 0.5 || style.overheated;
       ctx.fillStyle = on ? (hot ? C.hot1 : C.elec1) : (hot ? C.hot0 : C.elec0);
-      ctx.beginPath(); ctx.arc(lx, ly, px(3), 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(lx, ly, px(2.5), 0, Math.PI * 2); ctx.fill();
       if (on) lights.push({ x: lx, y: ly, r: 34, color: hot ? C.hot1 : C.elec1, glow: 0.35 });
     }
-    const hx = rig.headPos.x, hy = rig.headPos.y;
-    ellipsePath(hx, hy, z + 0.02 * k, hd, 0.11 * k, 0.1 * k);
-    ctx.fillStyle = style.shade; ctx.fill();
-    ellipsePath(hx, hy, z + 0.05 * k, hd, 0.1 * k, 0.09 * k);
-    ctx.fillStyle = style.shell; ctx.fill();
-    if (style.led != null) {
-      ellipsePath(hx + c * 0.06 * k, hy + s * 0.06 * k, z + 0.07 * k, hd, 0.045 * k, 0.07 * k);
-      ctx.fillStyle = style.empty ? C.void2 : C.elec1; ctx.fill();
-    }
-    if (style.led != null && !style.empty) {
-      // Head lamp: a soft pool of light ahead of the bug.
+    // Eyes glow while powered.
+    for (const [ea, es, er = 1.2, ez = z + 0.04] of eyes) dot(ea, es, ez, er, style.empty ? C.void1 : C.elec1);
+    if (!style.empty) {
+      // Light the bug and the ground ahead without tinting its colours.
       const [ex, ey] = P3(hx + c * 0.6, hy + s * 0.6, 0);
-      lights.push({ x: ex, y: ey, r: 85, color: C.elec1, glow: 0.08 });
-      // A faint glow on the bug itself, so it never vanishes in the dark.
+      lights.push({ x: ex, y: ey, r: 85, color: C.elec1, glow: 0.04 }); // head lamp
       const [bx, by] = P3(x, y, z);
-      lights.push({ x: bx, y: by, r: 55, color: C.elec1, glow: 0.12 });
+      lights.push({ x: bx, y: by, r: 60, color: C.bone, glow: 0.03 });
     }
-    ctx.strokeStyle = style.limb; ctx.lineWidth = px(1.2 * k);
-    for (const side of [-1, 1]) {
-      ctx.beginPath();
-      ctx.moveTo(...P3(hx + c * 0.07 * k - s * side * 0.04 * k, hy + s * 0.07 * k + c * side * 0.04 * k, z + 0.07 * k));
-      ctx.lineTo(...P3(hx + c * 0.24 * k - s * side * 0.13 * k, hy + s * 0.24 * k + c * side * 0.13 * k, z + 0.2 * k));
-      ctx.stroke();
-    }
-    for (const l of legs) if (depth(l) >= mid) drawLeg(rig, l, style);
+    for (const l of legs) if (depth(l) >= mid) drawLeg(rig, l, legStyle);
   }
+
+  // ---- the dung ball ----------------------------------------------------------
+  // Rolls for real: a few specks fixed on a sphere, rotated by the distance
+  // travelled about the axis across the direction of travel.
+  const ballSpin = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], x: null, y: null };
+  const SPECKS = Array.from({ length: 14 }, (_, i) => {
+    const u = hash(i, 3), v = hash(i, 4);
+    const th = u * Math.PI * 2, ph = Math.acos(2 * v - 1);
+    return [Math.sin(ph) * Math.cos(th), Math.sin(ph) * Math.sin(th), Math.cos(ph), i % 3];
+  });
+  function spinBall(b, radius) {
+    if (ballSpin.x === null) { ballSpin.x = b.x; ballSpin.y = b.y; return; }
+    const dx = b.x - ballSpin.x, dy = b.y - ballSpin.y, d = Math.hypot(dx, dy);
+    ballSpin.x = b.x; ballSpin.y = b.y;
+    if (d < 1e-6 || d > 2) return;
+    // Rotation axis: horizontal, across the motion (world z is up).
+    const ax = -dy / d, ay = dx / d, a = d / radius;
+    const ca = Math.cos(a), sa = Math.sin(a), t1 = 1 - ca;
+    const R = [ca + ax * ax * t1, ax * ay * t1, ay * sa, ay * ax * t1, ca + ay * ay * t1, -ax * sa, -ay * sa, ax * sa, ca];
+    const M = ballSpin.m, out = new Array(9);
+    for (let r = 0; r < 3; r++) for (let q = 0; q < 3; q++) out[r * 3 + q] = R[r * 3] * M[q] + R[r * 3 + 1] * M[3 + q] + R[r * 3 + 2] * M[6 + q];
+    ballSpin.m = out;
+  }
+  function drawBall(b, radius) {
+    spinBall(b, radius);
+    const X = sx(b.x, b.y), base = sy(b.x, b.y) - liftAt(b.x, b.y);
+    const R = radius * Math.SQRT2 * HW;
+    const Y = base - R * 0.9;
+    ctx.fillStyle = C.void1;
+    ctx.beginPath(); ctx.ellipse(X, base, R * 1.05, R * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+    const g = ctx.createRadialGradient(X - R * 0.35, Y - R * 0.4, R * 0.1, X, Y, R);
+    g.addColorStop(0, C.rust1); g.addColorStop(0.45, C.grime); g.addColorStop(1, C.void1);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(X, Y, R, 0, Math.PI * 2); ctx.fill();
+    // Specks of straw and grit on the visible half.
+    const M = ballSpin.m;
+    const vx = 0.5, vy = 0.5, vz = 0.707; // toward the camera
+    for (const [px0, py0, pz0, kind] of SPECKS) {
+      const wx = M[0] * px0 + M[1] * py0 + M[2] * pz0;
+      const wy = M[3] * px0 + M[4] * py0 + M[5] * pz0;
+      const wz = M[6] * px0 + M[7] * py0 + M[8] * pz0;
+      if (wx * vx + wy * vy + wz * vz < 0.15) continue;
+      const ox = (wx - wy) * Math.SQRT1_2 * R, oy = (wx + wy) * Math.SQRT1_2 * R * 0.5 - wz * R * 0.85;
+      ctx.fillStyle = kind === 0 ? C.lamp0 : kind === 1 ? C.moss2 : C.conc3;
+      ctx.fillRect(X + ox - 1, Y + oy - 1, 2, 2);
+    }
+  }
+
+  // ---- character previews (menu) ------------------------------------------------
+  // Draws one walking bug on a patch of floor into its own small canvas,
+  // snapped to the palette like the game.
+  function renderPreview(target, rig, kind, t, ball) {
+    const saved = { ctx, lights, map, baseZ, onePx, scale };
+    const pc = target.getContext('2d', { willReadFrequently: true });
+    ctx = pc; lights = []; map = null; baseZ = 0;
+    const s = 1; scale = s; onePx = 1 / s;
+    pc.setTransform(1, 0, 0, 1, 0, 0);
+    pc.fillStyle = C.void1; pc.fillRect(0, 0, target.width, target.height);
+    pc.setTransform(s, 0, 0, s, Math.round(target.width / 2), Math.round(target.height / 2 + 8));
+    for (let ty = -3; ty <= 2; ty++) for (let tx = -3; tx <= 2; tx++) drawFloor(tx, ty, t);
+    const ballFirst = ball && ball.x + ball.y < rig.pos.x + rig.pos.y;
+    if (ball && ballFirst) drawBall(ball, 0.32);
+    drawBugAt(rig, { kind, legW: 3, led: 0.15, overheated: false, empty: false }, t);
+    if (ball && !ballFirst) drawBall(ball, 0.32);
+    pc.setTransform(1, 0, 0, 1, 0, 0);
+    const img = pc.getImageData(0, 0, target.width, target.height);
+    quantize(img.data, target.width, target.height, table, 6);
+    pc.putImageData(img, 0, 0);
+    ({ ctx, lights, map, baseZ, onePx, scale } = saved);
+  }
+
 
   const SPIDER_SHELLS = [[C.beetleB1, C.beetleB0], [C.beetleA1, C.beetleA0]];
 
@@ -923,23 +1081,28 @@ export function createRenderer(canvas) {
       const rig = rigs.critters.get(c.id);
       if (rig) items.push({ d: standDepth(rig.pos.x, rig.pos.y) - (c.alive ? 0 : 0.01), k: 3, rig, i: c.id, c });
     }
+    if (p.ball) items.push({ d: standDepth(p.ball.x, p.ball.y), k: 1.5, b: p.ball });
     const pd = standDepth(pr.pos.x, pr.pos.y);
     const pz = lvAt(pr.pos.x, pr.pos.y);
     items.push({ d: pd, k: 2 });
     items.sort((a, b) => a.d - b.d || a.k - b.k);
 
+    let anyFade = false;
     for (const it of items) {
       if (it.k === 0) {
         // Columns taller than the player, in front of it, fade so it stays visible.
         const fade = it.d > pd && it.top > pz + 0.2 && hidesPlayer(it.tx, it.ty, pr, it.top * LEVEL_PX);
+        anyFade ||= fade;
         if (map.solid[it.ty * map.w + it.tx]) drawWall(it.tx, it.ty, t, fade ? 0.35 : 1);
         else drawColumn(it.tx, it.ty, t, fade ? 0.35 : 1);
       } else if (it.k === 0.5) drawVent(it.v, t, dt);
       else if (it.k === 1) drawCell(it.s, t);
+      else if (it.k === 1.5) drawBall(it.b, rigs.ballRadius || 0.32);
       else if (it.k === 3) drawSpider(it.rig, it.c, it.i, t);
       else {
         const empty = p.charges <= 0;
         drawBug(pr, {
+          kind: rigs.kind,
           shell: empty ? C.hull0 : C.hull1, shade: empty ? C.metal1 : C.hull0, limb: C.limb,
           legW: 3, led: p.heat, overheated: p.overheated, empty,
         }, t);
@@ -955,11 +1118,13 @@ export function createRenderer(canvas) {
       drawArc(ra, rb, t, 1 - c.stateTime / Math.max(1e-6, c.stateTotal));
     }
 
-    // Outline on top so the player stays visible behind walls.
-    baseZ = pz * LEVEL_Z;
-    ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight, pr.heading, 0.26, 0.16);
-    baseZ = 0;
-    ctx.globalAlpha = 0.5; ctx.strokeStyle = C.metal4; ctx.lineWidth = px(1); ctx.stroke(); ctx.globalAlpha = 1;
+    // Outline on top while a wall in front is faded, so the player stays visible.
+    if (anyFade) {
+      baseZ = pz * LEVEL_Z;
+      ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight * pr.opts.scale, pr.heading, 0.26 * pr.opts.scale, 0.16 * pr.opts.scale);
+      baseZ = 0;
+      ctx.globalAlpha = 0.5; ctx.strokeStyle = C.metal4; ctx.lineWidth = px(1); ctx.stroke(); ctx.globalAlpha = 1;
+    }
 
     for (const q of fx.particles) {
       ctx.globalAlpha = Math.max(0, Math.min(1, q.life));
@@ -1013,6 +1178,8 @@ export function createRenderer(canvas) {
   return {
     resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals,
     ventPuff: (v) => ventPuff(v, 14),
+    renderPreview,
+    resetBall: () => { ballSpin.x = null; ballSpin.m = [1, 0, 0, 0, 1, 0, 0, 0, 1]; },
     bigBurst: (x, y) => { burst(x, y); burst(x, y); },
     screenOf: (x, y) => ({ x: sx(x, y), y: sy(x, y) - liftAt(x, y) }),
     get size() { return { w, h }; },

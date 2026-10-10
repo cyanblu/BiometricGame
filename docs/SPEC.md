@@ -1,4 +1,4 @@
-# Biometric behaviour spec (v0.6)
+# Biometric behaviour spec (v0.7)
 
 Premise: you control a small mechanical bug in a world of living bugs. The
 bug's vital signs (biometrics) are part of play and show up in how it moves.
@@ -97,6 +97,52 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
    cannot pass through a one-tile wall.
 4. On contact, the velocity component into the wall is removed; the
    component along the wall is kept (the player slides).
+
+## Characters
+
+Chosen in a separate menu that opens first (and with `C` or the Bug button;
+choosing restarts the run). Data in `src/characters.js`. Every bug carries
+the same biometric implant (heartbeat light, pulse, heat) and, except the
+dung beetle, the same gameplay numbers; the motion preset changes how its
+body moves, not what it can do.
+
+| Bug | Motion preset (f / ζ / r) | Legs | Look |
+|---|---|---|---|
+| Cowboy beetle (*Chondropyga dorsalis*) | Default 3 / 0.5 / 1 | 6 | dark chafer shell, cream margins and mid-line |
+| Stag beetle (*Lucanus cervus*, Hirschkäfer) | Heavy 1.2 / 1.2 / 0 | 6 | chestnut wing cases, black thorax, antlers |
+| Jumping spider (Salticidae, Springspinne) | Snappy 6 / 1 / 0 | 8 | striped abdomen, four big glowing front eyes |
+| Daddy longlegs (Opiliones, Weberknecht) | Springy 2.5 / 0.25 / 2 | 8 | tiny high body, very long legs |
+| Praying mantis (*Mantis religiosa*, Gottesanbeterin) | Robot 2 / 0.5 / −2 | 4 | long green body, folded raptorial arms |
+| Dung beetle (*Scarabaeus sacer*, Pillendreher) | own: 3 / 0.7 / 0.5 | 6 | glossy black, shovel head, pushes a ball |
+
+Tested: each preset belongs to exactly one bug; every bug's gait keeps at
+least half its feet down and its feet within reach at walking and top speed.
+
+### Dung beetle: the ball
+
+| Property | Default | Unit |
+|---|---|---|
+| Ball radius | 0.32 | tiles |
+| Push acceleration | 7 | tiles/s² |
+| Fastest push | 6.5 | tiles/s |
+| Rolling friction | 1.6 | tiles/s² |
+| Bounce (speed kept) | 0.45 | |
+| Kick speed | 9 | tiles/s |
+| Squash speed | 3 | tiles/s |
+| Beetle repositioning speed | 6 | tiles/s |
+
+1. The beetle runs to the spot behind the ball, opposite the direction you
+   steer, and pushes when it touches the ball from behind (within 0.12 tiles,
+   facing the push within about 53°).
+2. The ball accelerates slowly, keeps rolling when you let go and slows by
+   friction; it bounces off walls and cliffs, keeping 45 % of the blocked
+   speed. Beetle and ball never overlap.
+3. A dash while touching the ball kicks it (one charge, heat as usual): the
+   ball goes to 9 tiles/s away from the beetle; the beetle stays. Away from
+   the ball, a dash is a normal beetle dash.
+4. A ball moving at 3 tiles/s or more squashes spiders it touches (same
+   floor). The ball also picks up batteries it rolls over.
+5. Spiders hit the beetle, not the ball.
 
 ## Core heat (biometrics)
 
@@ -304,5 +350,6 @@ Blood stays on the floor it was spilled on.
 ## Not decided yet
 
 - Whether killing spiders matters for winning (it doesn't yet).
+- Whether the other bugs should differ in gameplay too (speed, size, dash).
 - Health pickups or regeneration (none yet).
 - Art direction beyond placeholder shapes.

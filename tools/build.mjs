@@ -4,7 +4,7 @@
 // keywords are stripped, so top-level names must stay unique across files.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 
-const ORDER = ['src/sim.js', 'src/levels.js', 'src/dynamics.js', 'src/bug.js', 'src/pixel.js', 'src/vitals.js', 'src/render.js', 'src/main.js'];
+const ORDER = ['src/sim.js', 'src/levels.js', 'src/characters.js', 'src/dynamics.js', 'src/bug.js', 'src/pixel.js', 'src/vitals.js', 'src/render.js', 'src/main.js'];
 
 const js = ORDER.map((f) => {
   const raw = readFileSync(f, 'utf8');

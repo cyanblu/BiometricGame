@@ -75,6 +75,33 @@ body {
 .btn:hover { border-color: var(--muted); }
 .btn:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
 #tune-btn { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); }
+#bug-btn { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 56px); }
+
+/* Character select: full-screen, scrolls on small screens. */
+#chars {
+  position: fixed; inset: 0; z-index: 5; overflow-y: auto; box-sizing: border-box;
+  background: rgba(11, 13, 16, 0.94);
+  padding: calc(env(safe-area-inset-top, 0px) + 24px) 16px calc(env(safe-area-inset-bottom, 0px) + 24px);
+  display: grid; align-content: start; justify-items: center; gap: 16px;
+}
+#chars header { max-width: 760px; display: grid; gap: 8px; text-align: center; }
+#chars h1 { margin: 0; font: 700 34px/1 var(--display); letter-spacing: 0.04em; }
+#chars header p { margin: 0; color: var(--muted); }
+#char-grid { width: min(960px, 100%); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.char {
+  display: grid; gap: 4px; align-content: start; text-align: left; cursor: pointer;
+  font: 12px/1.4 var(--mono); color: var(--ink); background: var(--glass);
+  border: 1px solid var(--line); border-radius: 2px; padding: 10px;
+}
+.char canvas { width: 100%; height: auto; aspect-ratio: 120 / 76; image-rendering: pixelated; display: block; border: 1px solid var(--line); }
+.char:hover, .char:focus-visible { border-color: var(--ember); outline: none; }
+.char[aria-pressed="true"] { border-color: var(--visor); }
+.cname { font: 700 18px/1.1 var(--display); margin-top: 4px; }
+.clatin { color: var(--muted); font-size: 11px; font-style: italic; }
+.cpreset { color: var(--ember); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+.cblurb { color: var(--ink); }
+#chars .hint { margin: 0; color: var(--muted); font-size: 12px; text-align: center; }
+#chars kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
 
 .keys {
   position: fixed; left: 16px; top: calc(env(safe-area-inset-top, 0px) + 58px);
@@ -82,16 +109,15 @@ body {
 }
 .keys kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
 
-#intro, #win, #dead {
+#win, #dead {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(360px, calc(100% - 32px)); box-sizing: border-box;
   background: var(--glass); border: 1px solid var(--line); border-radius: 2px;
   padding: 20px 22px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
   display: grid; gap: 10px;
 }
-#intro h1, #win h2, #dead h2 { margin: 0; font: 700 26px/1.05 var(--display); text-wrap: balance; }
-#intro p, #win p, #dead p { margin: 0; color: var(--muted); }
-#intro .go { color: var(--ember); font-weight: 500; }
+#win h2, #dead h2 { margin: 0; font: 700 26px/1.05 var(--display); text-wrap: balance; }
+#win p, #dead p { margin: 0; color: var(--muted); }
 #dead h2 { color: var(--hot); }
 #dead-time { font: 700 28px/1 var(--display); color: var(--muted); font-variant-numeric: tabular-nums; }
 #win-time { font: 700 34px/1 var(--display); color: var(--ember); font-variant-numeric: tabular-nums; }
@@ -139,6 +165,9 @@ body {
   #dash-btn { display: block; }
   .keys { display: none; }
 }
+@media (max-width: 760px) {
+  #char-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 560px) {
   .vitals-box { --vs: 1.5; } /* 3 device px per art px on 2x phones */
   #panel { top: auto; left: 0; width: 100%; max-height: 62%; border-left: 0; border-top: 1px solid var(--line); border-radius: 0; }
@@ -149,7 +178,7 @@ body {
   .keys { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  #intro, #win, #panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  #chars, #win, #panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 </style>
 </head>
@@ -158,7 +187,7 @@ body {
 <canvas id="game" aria-label="Isometric play area"></canvas>
 
 <div class="hud">
-  <div class="brand">Biometric<small>Prototype 0.6 · Pump Yard</small></div>
+  <div class="brand">Biometric<small>Prototype 0.7 · Pump Yard</small></div>
   <div class="stats">
     <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Cells</span></div>
     <div class="stat"><b id="hud-kills">0</b><span>Kills</span></div>
@@ -174,15 +203,18 @@ body {
 </div>
 <div class="keys"><kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>T</kbd> tune</div>
 <button class="btn" id="tune-btn" type="button" aria-expanded="false" aria-controls="panel">Tune</button>
+<button class="btn" id="bug-btn" type="button">Bug</button>
 <button id="dash-btn" type="button">DASH</button>
 <div id="stick" hidden></div>
 
-<section id="intro">
-  <h1>Biometric</h1>
-  <p>You are a small mechanical bug in a drowned pump yard. <span id="intro-count">Fifteen</span> batteries lie in the rain. Collect them all as fast as you can.</p>
-  <p>Every dash burns one charge. A small cell gives 3, a big red battery 9. Dash straight through a spider to kill it.</p>
-  <p>Spiders crawl out of the vents. Alone they are cowards; two together crackle with an arc and lunge. Ten hits and you are done.</p>
-  <p class="go">Press a move key or tap to start.</p>
+<section id="chars" aria-label="Choose your bug">
+  <header>
+    <h1>Biometric</h1>
+    <p>Choose your bug. Each one moves with its own personality; the dung beetle plays by its own rules.
+    Collect every battery in the pump yard. Dashes cost charge, spiders hunt in pairs, ten hits and you are done.</p>
+  </header>
+  <div id="char-grid"></div>
+  <p class="hint">Click a bug, or use the arrow keys and Enter. In game: <kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>C</kbd> change bug · <kbd>T</kbd> tune</p>
 </section>
 
 <section id="dead" hidden>
