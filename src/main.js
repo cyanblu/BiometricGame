@@ -1,7 +1,7 @@
 // Browser entry: fixed-timestep loop, input, HUD and the tunables panel.
-import { createState, step, STEP, DEFAULT_PARAMS, isSolid, groundLevel } from './sim.js';
+import { createState, step, STEP, DEFAULT_PARAMS, isSolid, groundLevel, BIOME_KEYS } from './sim.js';
 import { createRenderer, LOOK_DEFAULTS } from './render.js';
-import { LEVELS } from './levels.js';
+import { LEVELS, BIOMES } from './levels.js';
 import { createRig, updateRig, setRigMotion, landRig, RIG_DEFAULTS, SPIDER_RIG, STAINER_RIG } from './bug.js';
 import { stepResponse } from './dynamics.js';
 import { createVitals } from './vitals.js';
@@ -430,7 +430,7 @@ function start(snapshot) {
   }
 
   // ---- HUD ---------------------------------------------------------------
-  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudKills = $('hud-kills'), capHp = $('cap-hp'), capCh = $('cap-ch'), hudBpmLabel = $('hud-bpm-label');
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudKills = $('hud-kills'), capHp = $('cap-hp'), capCh = $('cap-ch'), hudBpmLabel = $('hud-bpm-label'), hudBiome = $('hud-biome');
   const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
   function updateHud() {
     hudShards.textContent = `${state.collected} / ${state.shards.length}`;
@@ -449,6 +449,10 @@ function start(snapshot) {
     hudBpm.textContent = state.player.overheated ? 'HOT' : String(bpm);
     hudBpm.classList.toggle('hot', state.player.heat > 0.5);
     hudBpmLabel.textContent = state.player.overheated ? 'Overheat' : 'BPM';
+    const m = state.map, bx = Math.floor(pl.x), by = Math.floor(pl.y);
+    const bk = m.biome && bx >= 0 && by >= 0 && bx < m.w && by < m.h ? BIOME_KEYS[m.biome[by * m.w + bx]] : 'y';
+    const label = `Prototype 0.9 · ${BIOMES[bk]?.name ?? ''}`;
+    if (hudBiome.textContent !== label) hudBiome.textContent = label;
   }
   function onWin() {
     const name = LEVELS[levelIndex].name;

@@ -195,3 +195,21 @@ test('arena: no dead ends: from every reachable tile you can get back to the spa
   const back = flood(start, (ax, ay, bx, by) => canPass(m, bx, by, ax, ay)); // tiles that can reach the spawn
   for (const t of forward) assert.ok(back.has(t), `stuck at ${t}`);
 });
+
+test('the sprawl: a big arena with all five biomes, each with batteries', async () => {
+  const { BIOMES, generateArena } = await import('../src/levels.js');
+  const lvl = LEVELS[0];
+  assert.ok(lvl.map.length >= 64 && lvl.map[0].length >= 64, 'way bigger than 32 x 32');
+  const s = createState(lvl);
+  const counts = {}, cells = {};
+  const keys = Object.keys(BIOMES);
+  for (let i = 0; i < s.map.w * s.map.h; i++) counts[keys[s.map.biome[i]]] = (counts[keys[s.map.biome[i]]] || 0) + 1;
+  for (const c of s.shards) { const k = keys[s.map.biome[Math.floor(c.y) * s.map.w + Math.floor(c.x)]]; cells[k] = (cells[k] || 0) + 1; }
+  for (const k of keys) {
+    assert.ok(counts[k] > 300, `${BIOMES[k].name}: ${counts[k]} tiles`);
+    assert.ok(cells[k] >= 5, `${BIOMES[k].name}: ${cells[k]} batteries`);
+  }
+  assert.ok(s.vents.length >= 10 && s.cocoons.length >= 8);
+  // Deterministic: the same seed gives the same arena.
+  assert.deepEqual(generateArena(7, 80), lvl);
+});

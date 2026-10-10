@@ -29,7 +29,8 @@ export const DEFAULT_PARAMS = {
   hitDamage: 1,
   ventFirstMin: 1.5, ventFirstMax: 3.5, // first spawn per vent, s
   ventMin: 4, ventMax: 8, // spawn interval per vent, s
-  maxSpiders: 8, // alive at once
+  maxSpiders: 14, // cotton stainers alive at once
+  ventRange: 16, // vents only spawn while the player is within this many tiles
   ventSafe: 1.5, // no spawn while the player is this close to the vent
   emergeTime: 0.6,
   spawnCooldown: 1.5, // attack cooldown of a freshly spawned spider
@@ -103,6 +104,9 @@ export function rand(state) {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
 
+// Biome keys as used in level `biomes` rows (see src/levels.js).
+export const BIOME_KEYS = ['y', 'g', 'f', 'd', 'h'];
+
 export function parseLevel(def) {
   const rows = def.map;
   const h = rows.length;
@@ -111,6 +115,8 @@ export function parseLevel(def) {
   // Terrain: base level per tile, plus slopes. kind 0 flat, 1 ramp, 2 stairs;
   // (dx, dy) is the direction the slope rises in.
   const level = new Float32Array(w * h);
+  const biome = new Uint8Array(w * h); // index into BIOME_KEYS
+  const brows = def.biomes || [];
   const kind = new Uint8Array(w * h);
   const sdx = new Int8Array(w * h), sdy = new Int8Array(w * h);
   const hrows = def.heights || [];
@@ -133,6 +139,7 @@ export function parseLevel(def) {
       else if (c === 'V') vents.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'O') cocoons.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'b' || c === 's') critters.push({ x: tx + 0.5, y: ty + 0.5 });
+      biome[ty * w + tx] = Math.max(0, BIOME_KEYS.indexOf((brows[ty] ?? '')[tx] ?? 'y'));
       const hc = (hrows[ty] ?? '')[tx] ?? '0';
       const i = ty * w + tx;
       if (SLOPES[hc]) [kind[i], sdx[i], sdy[i]] = SLOPES[hc];
@@ -146,7 +153,7 @@ export function parseLevel(def) {
     const lx = tx - sdx[i], ly = ty - sdy[i];
     level[i] = lx >= 0 && ly >= 0 && lx < w && ly < h ? level[ly * w + lx] : 0;
   }
-  return { name: def.name, w, h, solid, level, kind, sdx, sdy, shards, critters, vents, cocoons, spawn };
+  return { name: def.name, w, h, solid, level, kind, sdx, sdy, biome, shards, critters, vents, cocoons, spawn };
 }
 
 export function isSolid(map, tx, ty) {
@@ -822,7 +829,8 @@ function stepVents(state, params, dt) {
     v.timer -= dt;
     if (v.timer > 0) continue;
     const alive = state.critters.filter((c) => c.alive && c.type === 'stainer').length;
-    if (alive >= params.maxSpiders || dist(v, p) < params.ventSafe) { v.timer = 1; continue; }
+    const d = dist(v, p);
+    if (alive >= params.maxSpiders || d < params.ventSafe || d > params.ventRange) { v.timer = 1; continue; }
     const c = makeSpider(state, v.x, v.y, {
       mode: 'emerge', stateTime: params.emergeTime, stateTotal: params.emergeTime,
     });

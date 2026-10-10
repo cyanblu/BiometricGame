@@ -102,7 +102,12 @@ export function createRenderer(canvas) {
   // ---- floor ---------------------------------------------------------------
   // Raised floors are riveted deck plates, so each level reads apart from the
   // concrete yard below. Higher decks are darker grating.
+  // Biome of a tile: 0 yard, 1 garden, 2 foundry, 3 drains, 4 hive (sim BIOME_KEYS).
+  const biomeAt = (tx, ty) => (map && map.biome ? map.biome[ty * map.w + tx] : 0);
+
   function drawDeck(tx, ty, level) {
+    const b = biomeAt(tx, ty);
+    if (b) { BIOME_DECK[b](tx, ty, level); return; }
     const n = hash(tx, ty, 7);
     diamond(tx, ty, 0);
     ctx.fillStyle = level >= 2 ? C.metal1 : n < 0.5 ? C.metal2 : C.metal1; ctx.fill();
@@ -133,6 +138,8 @@ export function createRenderer(canvas) {
   }
 
   function drawFloor(tx, ty, t) {
+    const b = biomeAt(tx, ty);
+    if (b) { BIOME_FLOOR[b](tx, ty, t); return; }
     const n = hash(tx, ty), v = hash(tx, ty, 1);
     diamond(tx, ty, 0);
     ctx.fillStyle = n < 0.5 ? C.conc1 : C.conc2; ctx.fill();
@@ -177,14 +184,262 @@ export function createRenderer(canvas) {
     }
   }
 
+  // ---- biome tile sets -------------------------------------------------------
+  const dot1 = (x, y, color, lift = 0) => { ctx.fillStyle = color; ctx.fillRect(sx(x, y) - onePx / 2, sy(x, y) - lift - onePx / 2, onePx, onePx); };
+  const tuft = (x, y, color, h = 5, lift = 0) => {
+    const X = sx(x, y), Y = sy(x, y) - lift;
+    ctx.strokeStyle = color; ctx.lineWidth = px(1);
+    ctx.beginPath(); ctx.moveTo(X - 2, Y); ctx.lineTo(X - 3, Y - h * 0.8); ctx.moveTo(X, Y); ctx.lineTo(X, Y - h); ctx.moveTo(X + 2, Y); ctx.lineTo(X + 3, Y - h * 0.7); ctx.stroke();
+  };
+  const glowPulse = (t, seed, speed = 1.5) => 0.5 + 0.5 * Math.sin(t * speed + seed * 7);
+
+  // Overgrown garden: dark soil, moss, grass tufts, glowing mushrooms.
+  function floorGarden(tx, ty, t) {
+    const n = hash(tx, ty), v = hash(tx, ty, 1);
+    diamond(tx, ty, 0);
+    ctx.fillStyle = n < 0.5 ? C.grime : C.rust0; ctx.fill();
+    for (let i = 0; i < 3; i++) {
+      floorBlob(tx + 0.15 + hash(tx, ty, 10 + i) * 0.7, ty + 0.15 + hash(tx, ty, 20 + i) * 0.7,
+        0.1 + hash(tx, ty, 30 + i) * 0.16, i % 2 ? C.moss0 : C.moss1);
+    }
+    for (let i = 0; i < 3; i++) if (hash(tx, ty, 40 + i) < 0.7) tuft(tx + 0.15 + hash(tx, ty, 50 + i) * 0.7, ty + 0.15 + hash(tx, ty, 60 + i) * 0.7, i ? C.moss2 : C.moss3);
+    if (v < 0.07) {
+      // Mushroom cluster with a soft glow.
+      const mx = tx + 0.3 + hash(tx, ty, 70) * 0.4, my = ty + 0.3 + hash(tx, ty, 71) * 0.4;
+      for (let i = 0; i < 3; i++) {
+        const X = sx(mx + i * 0.08, my - i * 0.05), Y = sy(mx + i * 0.08, my - i * 0.05);
+        ctx.fillStyle = C.hull1; ctx.fillRect(X - 0.5, Y - 4 - i, 1.5, 4 + i);
+        ctx.fillStyle = C.cell1; ctx.beginPath(); ctx.ellipse(X, Y - 4 - i, 3, 1.6, 0, 0, Math.PI * 2); ctx.fill();
+      }
+      lights.push({ x: sx(mx, my), y: sy(mx, my) - 5, r: 30 + glowPulse(t, n) * 6, color: C.cell1, glow: 0.22 });
+    } else if (v < 0.13) {
+      floorBlob(tx + 0.5, ty + 0.5, 0.28, C.void2); // mud
+      floorBlob(tx + 0.45, ty + 0.45, 0.12, C.puddle0);
+    }
+  }
+  function deckGarden(tx, ty) {
+    diamond(tx, ty, 0); ctx.fillStyle = C.grime; ctx.fill();
+    ctx.strokeStyle = C.rust1; ctx.lineWidth = px(1);
+    ctx.beginPath(); // roots
+    for (let i = 0; i < 2; i++) {
+      const a = tx + hash(tx, ty, 80 + i) * 0.8, b = ty + 0.1;
+      ctx.moveTo(sx(a, b), sy(a, b)); ctx.quadraticCurveTo(sx(a + 0.2, b + 0.5), sy(a + 0.2, b + 0.5), sx(a + 0.1, b + 0.85), sy(a + 0.1, b + 0.85));
+    }
+    ctx.stroke();
+    floorBlob(tx + 0.5, ty + 0.5, 0.2, C.moss1);
+    tuft(tx + 0.3, ty + 0.8, C.moss3, 4); tuft(tx + 0.8, ty + 0.4, C.moss2, 4);
+  }
+
+  // Rust foundry: riveted steel plates, rust blooms, oil, glowing ember cracks.
+  function floorFoundry(tx, ty, t) {
+    const n = hash(tx, ty), v = hash(tx, ty, 1);
+    diamond(tx, ty, 0); ctx.fillStyle = n < 0.5 ? C.metal1 : C.metal0; ctx.fill();
+    ctx.strokeStyle = C.void2; ctx.lineWidth = px(1); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx(tx + 0.5, ty), sy(tx + 0.5, ty)); ctx.lineTo(sx(tx + 0.5, ty + 1), sy(tx + 0.5, ty + 1)); ctx.stroke();
+    for (const [a, b] of [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9], [0.4, 0.5], [0.6, 0.5]]) dot1(tx + a, ty + b, C.metal3);
+    if (hash(tx, ty, 2) < 0.4) { floorBlob(tx + 0.3 + hash(tx, ty, 3) * 0.4, ty + 0.3 + hash(tx, ty, 4) * 0.4, 0.18, C.rust0); floorBlob(tx + 0.45, ty + 0.5, 0.08, C.rust1); }
+    if (v < 0.1) {
+      floorBlob(tx + 0.5, ty + 0.5, 0.3, C.void1); // oil slick with a sheen
+      for (let i = 0; i < 4; i++) dot1(tx + 0.35 + hash(tx, ty, 90 + i) * 0.3, ty + 0.35 + hash(tx, ty, 95 + i) * 0.3, [C.elec0, C.hot0, C.cell0, C.moss2][i]);
+    } else if (v < 0.17) {
+      // Ember crack: glows and flickers.
+      const fl = 0.6 + 0.4 * hash(Math.floor(t * 8), tx, ty);
+      ctx.strokeStyle = C.hot0; ctx.lineWidth = px(2);
+      ctx.beginPath();
+      let x = tx + 0.15, y = ty + 0.3 + hash(tx, ty, 5) * 0.4;
+      ctx.moveTo(sx(x, y), sy(x, y));
+      for (let i = 0; i < 4; i++) { x += 0.18; y += (hash(tx, ty, 6 + i) - 0.5) * 0.3; ctx.lineTo(sx(x, y), sy(x, y)); }
+      ctx.stroke();
+      ctx.strokeStyle = C.hot1; ctx.lineWidth = px(1); ctx.stroke();
+      lights.push({ x: sx(tx + 0.5, ty + 0.5), y: sy(tx + 0.5, ty + 0.5), r: 30 * fl, color: C.hot1, glow: 0.25 * fl });
+    }
+  }
+  function deckFoundry(tx, ty) {
+    diamond(tx, ty, 0); ctx.fillStyle = C.void2; ctx.fill();
+    ctx.strokeStyle = C.metal2; ctx.lineWidth = px(1);
+    ctx.beginPath();
+    for (let k = 1; k < 4; k++) {
+      const f = k / 4;
+      ctx.moveTo(sx(tx + f, ty), sy(tx + f, ty)); ctx.lineTo(sx(tx + f, ty + 1), sy(tx + f, ty + 1));
+      ctx.moveTo(sx(tx, ty + f), sy(tx, ty + f)); ctx.lineTo(sx(tx + 1, ty + f), sy(tx + 1, ty + f));
+    }
+    ctx.stroke();
+    diamond(tx, ty, 0); ctx.strokeStyle = C.metal3; ctx.stroke();
+    if (hash(tx, ty, 7) < 0.3) floorBlob(tx + 0.5, ty + 0.5, 0.15, C.rust0);
+  }
+
+  // Flooded drains: wet brick and shallow water with spreading ripples.
+  function floorDrains(tx, ty, t) {
+    const v = hash(tx, ty, 1);
+    diamond(tx, ty, 0); ctx.fillStyle = C.rust0; ctx.fill();
+    ctx.strokeStyle = C.conc0; ctx.lineWidth = px(1);
+    ctx.beginPath(); // brick courses with staggered joints
+    for (let r = 0; r < 4; r++) {
+      const y = ty + (r + 1) / 4;
+      if (r < 3) { ctx.moveTo(sx(tx, y), sy(tx, y)); ctx.lineTo(sx(tx + 1, y), sy(tx + 1, y)); }
+      for (let c = (r % 2) * 0.25; c < 1; c += 0.5) {
+        const x = tx + c + 0.25;
+        ctx.moveTo(sx(x, y - 0.25), sy(x, y - 0.25)); ctx.lineTo(sx(x, y), sy(x, y));
+      }
+    }
+    ctx.stroke();
+    if (v < 0.4) {
+      // Shallow water over the bricks.
+      diamond(tx, ty, 0, 0.04); ctx.fillStyle = C.puddle0; ctx.fill();
+      const ph = (t * 0.6 + hash(tx, ty, 3) * 3) % 1;
+      const rx = tx + 0.3 + hash(tx, ty, 4) * 0.4, ry = ty + 0.3 + hash(tx, ty, 5) * 0.4;
+      ctx.strokeStyle = C.puddle1; ctx.lineWidth = px(1);
+      ctx.globalAlpha = 1 - ph;
+      ctx.beginPath(); ctx.ellipse(sx(rx, ry), sy(rx, ry), 3 + ph * 14, (3 + ph * 14) * 0.5, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+      const sh = Math.sin(t * 1.1 + tx) * 0.08;
+      ctx.beginPath(); ctx.moveTo(sx(tx + 0.2 + sh, ty + 0.3), sy(tx + 0.2 + sh, ty + 0.3)); ctx.lineTo(sx(tx + 0.45 + sh, ty + 0.3), sy(tx + 0.45 + sh, ty + 0.3)); ctx.stroke();
+    } else if (v < 0.5) {
+      floorBlob(tx + 0.5, ty + 0.5, 0.2, C.moss0);
+    } else if (v < 0.56) {
+      diamond(tx, ty, 0, 0.25); ctx.fillStyle = C.void0; ctx.fill(); // drain grate
+      ctx.strokeStyle = C.metal2; ctx.beginPath();
+      for (let k = 1; k < 4; k++) { const f = 0.25 + k * 0.125; ctx.moveTo(sx(tx + f, ty + 0.25), sy(tx + f, ty + 0.25)); ctx.lineTo(sx(tx + f, ty + 0.75), sy(tx + f, ty + 0.75)); }
+      ctx.stroke();
+    }
+  }
+  function deckDrains(tx, ty) {
+    diamond(tx, ty, 0); ctx.fillStyle = C.conc2; ctx.fill();
+    ctx.strokeStyle = C.conc0; ctx.lineWidth = px(1); ctx.stroke();
+    ctx.strokeStyle = C.moss1;
+    ctx.beginPath();
+    for (let i = 0; i < 3; i++) { const a = tx + 0.2 + i * 0.3; ctx.moveTo(sx(a, ty + 0.1), sy(a, ty + 0.1)); ctx.lineTo(sx(a + 0.05, ty + 0.9), sy(a + 0.05, ty + 0.9)); }
+    ctx.stroke();
+    ctx.strokeStyle = C.puddle1;
+    ctx.beginPath(); ctx.moveTo(sx(tx + 0.2, ty + 0.6), sy(tx + 0.2, ty + 0.6)); ctx.lineTo(sx(tx + 0.5, ty + 0.6), sy(tx + 0.5, ty + 0.6)); ctx.stroke();
+  }
+
+  // The hive: dark membrane over ribs of bone, red veins, pulsing pustules.
+  function floorHive(tx, ty, t) {
+    const v = hash(tx, ty, 1);
+    // Dark flesh (kept dull so red stainers and blood still read on it).
+    diamond(tx, ty, 0); ctx.fillStyle = C.void1; ctx.fill();
+    ctx.globalAlpha = 0.55; ctx.fillStyle = C.blood0; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.lineWidth = px(2); ctx.strokeStyle = C.hull0;
+    ctx.beginPath(); // a bone rib arcing across the tile
+    const a = hash(tx, ty, 2) * 0.6 + 0.2;
+    ctx.moveTo(sx(tx, ty + a), sy(tx, ty + a)); ctx.quadraticCurveTo(sx(tx + 0.5, ty + a - 0.25), sy(tx + 0.5, ty + a - 0.25), sx(tx + 1, ty + a), sy(tx + 1, ty + a)); ctx.stroke();
+    ctx.lineWidth = px(1); ctx.strokeStyle = C.hull1;
+    ctx.beginPath(); ctx.moveTo(sx(tx + 0.1, ty + a - 0.04), sy(tx + 0.1, ty + a - 0.04)); ctx.quadraticCurveTo(sx(tx + 0.5, ty + a - 0.3), sy(tx + 0.5, ty + a - 0.3), sx(tx + 0.9, ty + a - 0.04), sy(tx + 0.9, ty + a - 0.04)); ctx.stroke();
+    ctx.strokeStyle = v < 0.5 ? C.blood0 : C.blood1; // veins
+    ctx.beginPath();
+    let x = tx + 0.1, y = ty + 0.2 + hash(tx, ty, 3) * 0.6;
+    ctx.moveTo(sx(x, y), sy(x, y));
+    for (let i = 0; i < 4; i++) { x += 0.2; y += (hash(tx, ty, 4 + i) - 0.5) * 0.3; ctx.lineTo(sx(x, y), sy(x, y)); }
+    ctx.stroke();
+    if (v < 0.08) {
+      const px0 = tx + 0.3 + hash(tx, ty, 9) * 0.4, py0 = ty + 0.3 + hash(tx, ty, 10) * 0.4, pul = glowPulse(t, v, 2.4);
+      floorBlob(px0, py0, 0.06 + pul * 0.02, C.blood1);
+      dot1(px0 - 0.02, py0 - 0.02, C.blood2);
+      lights.push({ x: sx(px0, py0), y: sy(px0, py0), r: 14 + pul * 8, color: C.blood1, glow: 0.1 + pul * 0.1 });
+    } else if (v < 0.24) {
+      for (let i = 0; i < 4; i++) dot1(tx + 0.2 + hash(tx, ty, 20 + i) * 0.6, ty + 0.2 + hash(tx, ty, 30 + i) * 0.6, C.void0); // pores
+    }
+  }
+  function deckHive(tx, ty) {
+    diamond(tx, ty, 0); ctx.fillStyle = C.hull0; ctx.fill();
+    ctx.strokeStyle = C.hull1; ctx.lineWidth = px(1);
+    ctx.beginPath();
+    for (let k = 1; k < 4; k++) { const f = k / 4; ctx.moveTo(sx(tx + 0.05, ty + f), sy(tx + 0.05, ty + f)); ctx.quadraticCurveTo(sx(tx + 0.5, ty + f - 0.12), sy(tx + 0.5, ty + f - 0.12), sx(tx + 0.95, ty + f), sy(tx + 0.95, ty + f)); }
+    ctx.stroke();
+    ctx.strokeStyle = C.metal1; diamond(tx, ty, 0); ctx.stroke();
+    if (hash(tx, ty, 8) < 0.3) dot1(tx + 0.5, ty + 0.5, C.blood2);
+  }
+
+  const BIOME_FLOOR = [null, floorGarden, floorFoundry, floorDrains, floorHive];
+  const BIOME_DECK = [null, deckGarden, deckFoundry, deckDrains, deckHive];
+
+  // Walls per biome: [face +y, face +x, top, top inner line] plus decoration.
+  const WALL_COLORS = [
+    [C.metal1, C.metal0, C.metal3, C.metal2], // yard: machinery
+    [C.conc1, C.conc0, C.moss1, C.moss2], // garden: overgrown stone
+    [C.metal0, C.void2, C.metal2, C.metal1], // foundry: furnace blocks
+    [C.rust1, C.rust0, C.conc2, C.conc1], // drains: brick pillars
+    [C.hull1, C.hull0, C.bone, C.hull1], // hive: bone columns
+  ];
+  function decorateWallBiome(b, face, t) {
+    const { tx, ty } = face, k = face.side === 'y' ? 300 : 350;
+    if (b === 1) {
+      // Vines and moss hanging from the top.
+      for (let i = 0; i < 4; i++) {
+        const u = 0.1 + hash(tx, ty, k + i) * 0.8, len = 0.3 + hash(tx, ty, k + 10 + i) * 0.6;
+        ctx.strokeStyle = i % 2 ? C.moss2 : C.moss1; ctx.lineWidth = px(1);
+        ctx.beginPath(); ctx.moveTo(...facePoint(face, u, 1)); ctx.quadraticCurveTo(...facePoint(face, u + 0.05, 1 - len / 2), ...facePoint(face, u - 0.02, 1 - len)); ctx.stroke();
+        const [lx, ly] = facePoint(face, u - 0.02, 1 - len);
+        ctx.fillStyle = C.moss3; ctx.fillRect(lx - 1, ly - 1, 2, 2);
+      }
+      faceQuad(face, 0, 1, 0.8, 1); ctx.fillStyle = C.moss1; ctx.fill();
+    } else if (b === 2) {
+      // Glowing furnace slits, rivet rows.
+      const fl = 0.6 + 0.4 * hash(Math.floor(t * 6), tx + ty, k);
+      faceQuad(face, 0.2, 0.8, 0.45, 0.55); ctx.fillStyle = C.void0; ctx.fill();
+      faceQuad(face, 0.25, 0.75, 0.47, 0.53); ctx.fillStyle = fl > 0.8 ? C.hot1 : C.hot0; ctx.fill();
+      const [lx, ly] = facePoint(face, 0.5, 0.5);
+      lights.push({ x: lx, y: ly + 6, r: 40 * fl, color: C.hot1, glow: 0.25 * fl });
+      for (let i = 0; i < 6; i++) { const [rx, ry] = facePoint(face, 0.1 + i * 0.16, 0.85); ctx.fillStyle = C.metal3; ctx.fillRect(rx - onePx / 2, ry - onePx / 2, onePx, onePx); }
+    } else if (b === 3) {
+      // Brick courses, a water stain and a dripping spout.
+      ctx.strokeStyle = C.conc0; ctx.lineWidth = px(1);
+      for (let r = 1; r < 5; r++) {
+        const v = r / 5;
+        ctx.beginPath(); ctx.moveTo(...facePoint(face, 0, v)); ctx.lineTo(...facePoint(face, 1, v)); ctx.stroke();
+        for (let c = (r % 2) * 0.17; c < 1; c += 0.34) { ctx.beginPath(); ctx.moveTo(...facePoint(face, c + 0.17, v)); ctx.lineTo(...facePoint(face, c + 0.17, v - 0.2)); ctx.stroke(); }
+      }
+      faceQuad(face, 0.55, 0.65, 0.7, 0); ctx.fillStyle = C.puddle0; ctx.fill();
+      if (hash(tx, ty, k + 3) < 0.5) {
+        faceQuad(face, 0.52, 0.68, 0.62, 0.72); ctx.fillStyle = C.metal2; ctx.fill();
+        const drip = (t * 1.3 + hash(tx, ty, k)) % 1;
+        const [dx, dy] = facePoint(face, 0.6, 0.62 - drip * 0.6);
+        ctx.fillStyle = C.puddle1; ctx.fillRect(dx - 0.5, dy, 1.5, 2);
+        const [lx, ly] = facePoint(face, 0.6, 0.85);
+        if (hash(tx, ty, k + 4) < 0.5) lights.push({ x: lx, y: ly + 8, r: 70, color: C.elec1, glow: 0.12 });
+      }
+    } else if (b === 4) {
+      // Vertebral ridges and veins.
+      for (let r = 1; r < 6; r++) {
+        const v = r / 6;
+        faceQuad(face, 0, 1, v - 0.03, v); ctx.fillStyle = C.metal1; ctx.fill();
+        faceQuad(face, 0, 1, v, v + 0.03); ctx.fillStyle = C.bone; ctx.fill();
+      }
+      ctx.strokeStyle = C.blood1; ctx.lineWidth = px(1);
+      ctx.beginPath(); ctx.moveTo(...facePoint(face, 0.3, 1)); ctx.quadraticCurveTo(...facePoint(face, 0.5, 0.5), ...facePoint(face, 0.35, 0)); ctx.stroke();
+      if (hash(tx, ty, k + 5) < 0.4) {
+        const pul = glowPulse(t, hash(tx, ty, k), 2);
+        const [lx, ly] = facePoint(face, 0.6, 0.4);
+        ctx.fillStyle = C.blood2; ctx.beginPath(); ctx.arc(lx, ly, px(2 + pul), 0, Math.PI * 2); ctx.fill();
+        lights.push({ x: lx, y: ly, r: 22 + pul * 10, color: C.blood2, glow: 0.25 });
+      }
+    }
+  }
+  function decorateWallTop(b, tx, ty, lift) {
+    if (b === 1) { for (let i = 0; i < 3; i++) tuft(tx + 0.2 + hash(tx, ty, 120 + i) * 0.6, ty + 0.2 + hash(tx, ty, 130 + i) * 0.6, C.moss3, 5, lift); if (hash(tx, ty, 140) < 0.3) dot1(tx + 0.5, ty + 0.5, C.lamp1, lift); }
+    else if (b === 2) { ctx.fillStyle = C.void0; ctx.beginPath(); ctx.ellipse(sx(tx + 0.5, ty + 0.5), sy(tx + 0.5, ty + 0.5) - lift, 6, 3, 0, 0, Math.PI * 2); ctx.fill(); dot1(tx + 0.5, ty + 0.5, C.hot0, lift); }
+    else if (b === 3) { ctx.fillStyle = C.moss1; ctx.beginPath(); ctx.ellipse(sx(tx + 0.4, ty + 0.6), sy(tx + 0.4, ty + 0.6) - lift, 7, 3, 0, 0, Math.PI * 2); ctx.fill(); }
+    else if (b === 4) { for (let i = 0; i < 5; i++) dot1(tx + 0.2 + hash(tx, ty, 150 + i) * 0.6, ty + 0.2 + hash(tx, ty, 160 + i) * 0.6, C.hull0, lift); }
+  }
+
+  // Cliff faces per biome: [face +y, face +x, strata, foot].
+  const CLIFF_COLORS = [
+    [C.conc0, C.void2, C.conc0, C.grime],
+    [C.rust0, C.grime, C.void2, C.moss0],
+    [C.metal1, C.metal0, C.void2, C.rust0],
+    [C.rust0, C.conc0, C.conc0, C.puddle0],
+    [C.hull0, C.blood0, C.metal1, C.blood0],
+  ];
+
   // ---- terrain columns -------------------------------------------------------
   // Earth/concrete cliff faces under raised floors and slopes.
-  function decorateCliff(face) {
+  function decorateCliff(face, cc = [C.conc0, C.void2, C.conc0, C.grime]) {
     const { tx, ty } = face, k = face.side === 'y' ? 200 : 250;
     // Strata line and grime at the foot.
-    ctx.strokeStyle = C.conc0; ctx.lineWidth = px(1);
+    ctx.strokeStyle = cc[2]; ctx.lineWidth = px(1);
     ctx.beginPath(); ctx.moveTo(...facePoint(face, 0, 0.5)); ctx.lineTo(...facePoint(face, 1, 0.5)); ctx.stroke();
-    faceQuad(face, 0, 1, 0, 0.18); ctx.fillStyle = C.grime; ctx.fill();
+    faceQuad(face, 0, 1, 0, 0.18); ctx.fillStyle = cc[3]; ctx.fill();
     if (hash(tx, ty, k + 1) < 0.5) {
       const u = 0.1 + hash(tx, ty, k + 2) * 0.7;
       faceQuad(face, u, u + 0.1, 1, 0.3); ctx.fillStyle = C.rust0; ctx.fill();
@@ -274,9 +529,10 @@ export function createRenderer(canvas) {
     ctx.globalAlpha = alpha;
     const i = ty * map.w + tx;
     for (const f of columnFaces(tx, ty, (gx, gy) => cornerPx(tx, ty, gx, gy))) {
+      const cc = CLIFF_COLORS[biomeAt(tx, ty)];
       faceQuad(f, 0, 1, 0, 1);
-      ctx.fillStyle = f.side === 'y' ? C.conc0 : C.void2; ctx.fill();
-      decorateCliff(f);
+      ctx.fillStyle = f.side === 'y' ? cc[0] : cc[1]; ctx.fill();
+      decorateCliff(f, cc);
     }
     const base = map.level[i] * LEVEL_PX;
     if (map.kind[i]) {
@@ -355,16 +611,18 @@ export function createRenderer(canvas) {
   function drawWall(tx, ty, t, alpha = 1) {
     ctx.globalAlpha = alpha;
     const top = wallTop(tx, ty);
+    const b = biomeAt(tx, ty), wc = WALL_COLORS[b];
     for (const f of columnFaces(tx, ty, () => top)) {
       faceQuad(f, 0, 1, 0, 1);
-      ctx.fillStyle = f.side === 'y' ? C.metal1 : C.metal0; ctx.fill();
-      decorateFace(f, t);
+      ctx.fillStyle = f.side === 'y' ? wc[0] : wc[1]; ctx.fill();
+      if (b) decorateWallBiome(b, f, t); else decorateFace(f, t);
     }
     const WALL_H = top; // lift of the top face (shadows the module constant)
     diamond(tx, ty, WALL_H);
-    ctx.fillStyle = C.metal3; ctx.fill();
+    ctx.fillStyle = wc[2]; ctx.fill();
     diamond(tx, ty, WALL_H, 0.12);
-    ctx.strokeStyle = C.metal2; ctx.lineWidth = px(1); ctx.stroke();
+    ctx.strokeStyle = wc[3]; ctx.lineWidth = px(1); ctx.stroke();
+    if (b) { decorateWallTop(b, tx, ty, WALL_H); ctx.globalAlpha = 1; return; }
     ctx.fillStyle = C.metal4;
     for (const [a, b] of [[0.08, 0.08], [0.92, 0.08], [0.92, 0.92], [0.08, 0.92]]) {
       ctx.fillRect(sx(tx + a, ty + b) - onePx / 2, sy(tx + a, ty + b) - WALL_H - onePx / 2, onePx, onePx);
@@ -1432,15 +1690,22 @@ export function createRenderer(canvas) {
       for (const c of state.cocoons) discShadow(c.x, c.y, 16, 6.5);
     }
 
+    // Only tiles on screen are drawn (the arena is far bigger than the view).
+    const halfW = lw / 2 / scale + HW * 2, halfH = lh / 2 / scale;
+    const camX = view.camX, camY = view.camY;
+    const onScreen = (tx, ty, top = 0) => {
+      const X = (tx - ty) * HW, Y = (tx + ty) * HH;
+      return X > camX - halfW && X < camX + halfW && Y + TILE_H * 2 > camY - halfH && Y - top - 60 < camY + halfH;
+    };
     // Ground level: flat level-0 floor first, with its blood, vents and shadows.
     const ground = (tx, ty) => { const i = ty * map.w + tx; return !map.solid[i] && !map.kind[i] && map.level[i] === 0; };
     for (let ty = 0; ty < map.h; ty++) {
-      for (let tx = 0; tx < map.w; tx++) if (ground(tx, ty)) drawFloor(tx, ty, t);
+      for (let tx = 0; tx < map.w; tx++) if (ground(tx, ty) && onScreen(tx, ty)) drawFloor(tx, ty, t);
     }
     if (decal.map === map) {
       for (const key of decal.tiles.keys()) {
         const tx = key % map.w, ty = Math.floor(key / map.w);
-        if (ground(tx, ty)) drawTileBlood(tx, ty, 0, false);
+        if (ground(tx, ty) && onScreen(tx, ty)) drawTileBlood(tx, ty, 0, false);
       }
     }
     for (const v of state.vents) if (ground(Math.floor(v.x), Math.floor(v.y))) drawVent(v, t, dt);
@@ -1464,7 +1729,11 @@ export function createRenderer(canvas) {
       return map.solid[i] ? map.level[i] + WALL_H / LEVEL_PX : map.level[i] + (map.kind[i] ? 1 : 0);
     };
     for (let ty = 0; ty < map.h; ty++) {
-      for (let tx = 0; tx < map.w; tx++) if (!ground(tx, ty)) items.push({ d: tx + ty + 1, k: 0, tx, ty, top: colTop(tx, ty) });
+      for (let tx = 0; tx < map.w; tx++) {
+        if (ground(tx, ty)) continue;
+        const top = colTop(tx, ty);
+        if (onScreen(tx, ty, top * LEVEL_PX)) items.push({ d: tx + ty + 1, k: 0, tx, ty, top });
+      }
     }
     for (const v of state.vents) {
       const tx = Math.floor(v.x), ty = Math.floor(v.y);

@@ -308,14 +308,15 @@ red glow of their own so the warning colours read in the dark.
 |---|---|---|
 | First spawn | 1.5 – 3.5 | s |
 | Spawn interval | 4 – 8 | s, per vent |
-| Most spiders alive at once | 8 | |
+| Most enemies alive at once | 14 | |
+| Only within this distance of the player | 16 | tiles |
 | No spawn if the player is within | 1.5 | tiles |
 | Emerging | 0.6 | s |
 | Corpses stay for | 12 | s |
 
 1. Vents (`V` in the map) are floor grates; you can walk over them.
-2. Each vent has its own timer (seeded PRNG). When it runs out and fewer than
-   8 spiders are alive, a spider crawls out; the timer restarts.
+2. Each vent has its own timer (seeded PRNG). When it runs out, the player is within 16
+   tiles and fewer than 14 enemies are alive, a spider crawls out; the timer restarts.
 3. A new spider spends 0.6 s emerging (it can't move or attack, but a dash
    kills it), then gets a 1.5 s attack cooldown before it may pair up.
 4. Dead spiders are removed after 12 s; the renderer leaves their husk on the
@@ -429,18 +430,50 @@ onto walls). Splatters and husks stay on the floor for the rest of the run.
 4. Rain in screen space, drawn before lighting so it shows near lights.
 5. Look settings are tunable: art pixel size, dither, darkness, rain, palette on/off.
 
-## Arena
+## Arena: The Sprawl
 
-32 × 32 tiles, mostly open: a few pillars and broken wall stubs, 5 vents,
-12 small cells and 3 big red batteries. Terrain: a north-east plateau (level 1,
-ramp from the west, stairs from the south) with a grated deck on it (level 2,
-stairs), a south-west plateau (level 1, ramp from the east, stairs from the
-north) and a small middle island (level 1, ramp from the south).
+80 × 80 tiles, generated from a seed by `generateArena(seed, size)` in
+`src/levels.js` (pure and deterministic; the game uses seed 7). A layout that
+fails validation is thrown away and the next seed tried.
 
-Raised floors are riveted metal deck plates (level 2: grating) with a bright
-lip; cliff faces are dark concrete with drains, rust and moss; ramps have
-grip grooves and worn hazard paint at the foot; stairs show treads and risers.
-Blood stays on the floor it was spilled on.
+Five biomes, from value noise so the borders wobble: the **Pump Yard** in the
+middle (radius about 0.17 × width, where you start) and four quarters around
+it: **Rust Foundry** east, **The Hive** south, **Overgrown Garden** west,
+**Flooded Drains** north. The map keeps a `biomes` layer (`y g f d h`), parsed
+into `map.biome` (index into `BIOME_KEYS`).
+
+| Biome | Plateaus | Wall density | Stairs vs ramps | Small / big cells | Vents | Cocoons |
+|---|---|---|---|---|---|---|
+| Pump Yard | 2 | 1.2 % | 50 % | 6 / 1 | 1 | 0 |
+| Overgrown Garden | 4 | 2 % | 20 % | 6 / 1 | 3 | 2 |
+| Rust Foundry | 4 | 3.5 % | 80 % | 6 / 2 | 3 | 2 |
+| Flooded Drains | 4 | 2.5 % | 70 % | 6 / 1 | 3 | 2 |
+| The Hive | 4 | 2.5 % | 40 % | 6 / 2 | 3 | 4 |
+
+1. Plateaus (level 1, 5–10 tiles a side, inside one biome, kept apart) get one
+   or two 2-wide ramps or stairs; bigger ones may carry a level-2 deck with
+   its own connector.
+2. Walls are scattered clusters (1×1 or 2×2), never on or next to a slope
+   connector and never within 4 tiles of the spawn.
+3. Validation: every tile reachable from the spawn must be able to get back
+   to it (forward and backward flood fill with `canPass`), so there are no
+   dead ends. Items go on reachable flat tiles, spaced apart, away from the spawn.
+4. Vents only spawn within 16 tiles of the player, and at most 14 enemies are
+   alive at once.
+
+Each biome has its own floor, deck, wall and cliff art:
+- **Pump Yard**: the original riveted plates, machinery walls, concrete cliffs.
+- **Overgrown Garden**: soil and moss with roots, glowing fungus; overgrown
+  stone walls with hanging vines; mossy cliffs.
+- **Rust Foundry**: dark iron plates with glowing slag cracks; furnace walls
+  with lit slits; rusted cliffs.
+- **Flooded Drains**: wet brick and puddles; brick walls with dripping spouts
+  and cyan lamps; slimy cliffs.
+- **The Hive**: dull dark flesh with bone ribs, veins and a few pulsing
+  pustules (kept dull so red enemies and blood still read); bone walls with
+  vertebral ridges.
+
+The HUD subtitle shows the biome the bug is standing in.
 
 ## Not decided yet
 
