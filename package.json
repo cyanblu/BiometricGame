@@ -1,0 +1,12 @@
+{
+  "name": "biometric",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Isometric top-down prototype. Simulation is headless and tested in Node.",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "build": "node tools/build.mjs",
+    "serve": "python3 -m http.server 8000"
+  }
+}

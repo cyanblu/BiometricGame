@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- page:start -->
+<title>Biometric</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: full-bleed canvas diorama; HUD pinned to corners; tunables in a side drawer (bottom sheet on phones).
+   Single dark look on purpose: the game is a night scene in both host themes. */
+:root {
+  /* UI tokens; world colours live in src/pixel.js (COLORS). */
+  --night: #0b0d10;
+  --ember: #c8d43c;   /* battery charge: the accent */
+  --visor: #6fe6ff;   /* electric */
+  --hot: #ff7a3c;
+  --ink: #e8e4d6;
+  --muted: #8e9a96;
+  --glass: rgba(11, 13, 16, 0.84);
+  --line: rgba(232, 228, 214, 0.16);
+  --display: "Pixelify Sans", "Courier New", ui-monospace, monospace;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; overflow: hidden; background: var(--night); color: var(--ink);
+  font: 14px/1.4 var(--mono); -webkit-user-select: none; user-select: none;
+}
+#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; image-rendering: pixelated; }
+
+.hud {
+  position: fixed; left: 0; right: 0; top: 0; pointer-events: none;
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) 16px 0;
+}
+.brand { font-family: var(--display); font-weight: 700; font-size: 20px; letter-spacing: 0.04em; line-height: 1; }
+.brand small { display: block; margin-top: 6px; font: 500 11px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.stats { display: flex; gap: 18px; align-items: flex-start; font-variant-numeric: tabular-nums; }
+.stat { display: grid; gap: 4px; text-align: right; }
+.stat b { font: 700 20px/1 var(--display); }
+.stat span { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.stat b.shards { color: var(--ember); }
+#hud-dash { --fill: 1; width: 54px; height: 6px; margin-top: 7px; border-radius: 3px; background: var(--line); position: relative; overflow: hidden; }
+#hud-dash::after { content: ""; position: absolute; inset: 0; width: calc(var(--fill) * 100%); background: var(--muted); }
+#hud-dash.ready::after { background: var(--visor); }
+#hud-dash.blocked::after { background: var(--hot); }
+#hud-bpm { transition: color 0.2s; }
+/* Vitals: pixel sprite (168 x 52) scaled up crisp, bottom left. */
+.vitals-box {
+  --vs: 2;
+  position: fixed; left: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  display: grid; gap: 2px; pointer-events: none;
+}
+#vitals { --vw: 168; width: calc(var(--vw) * 1px * var(--vs)); height: calc(52px * var(--vs)); image-rendering: pixelated; display: block; }
+.vitals-cap { display: flex; justify-content: space-between; padding-inline: calc(36px * var(--vs)) 8px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+#cap-hp { color: #b8262a; }
+#cap-ch { color: var(--ember); }
+#cap-ch.empty { color: var(--hot); }
+#hud-bpm.hot { color: var(--hot); }
+.motion { display: grid; gap: 8px; }
+.motion canvas { width: 100%; height: auto; aspect-ratio: 536 / 200; background: var(--night); border: 1px solid var(--line); border-radius: 4px; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn.chip { padding: 5px 8px; font-size: 11px; }
+
+.btn {
+  pointer-events: auto; font: 500 12px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink); background: var(--glass); border: 1px solid var(--line); border-radius: 2px;
+  padding: 8px 12px; cursor: pointer;
+}
+.btn:hover { border-color: var(--muted); }
+.btn:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+#tune-btn { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); }
+#bug-btn { position: fixed; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 56px); }
+
+/* Character select: full-screen, scrolls on small screens. */
+#chars {
+  position: fixed; inset: 0; z-index: 5; overflow-y: auto; box-sizing: border-box;
+  background: rgba(11, 13, 16, 0.94);
+  padding: calc(env(safe-area-inset-top, 0px) + 24px) 16px calc(env(safe-area-inset-bottom, 0px) + 24px);
+  display: grid; align-content: start; justify-items: center; gap: 16px;
+}
+#chars header { max-width: 760px; display: grid; gap: 8px; text-align: center; }
+#chars h1 { margin: 0; font: 700 34px/1 var(--display); letter-spacing: 0.04em; }
+#chars header p { margin: 0; color: var(--muted); }
+#char-grid { width: min(960px, 100%); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.char {
+  display: grid; gap: 4px; align-content: start; text-align: left; cursor: pointer;
+  font: 12px/1.4 var(--mono); color: var(--ink); background: var(--glass);
+  border: 1px solid var(--line); border-radius: 2px; padding: 10px;
+}
+.char canvas { width: 100%; height: auto; aspect-ratio: 120 / 76; image-rendering: pixelated; display: block; border: 1px solid var(--line); }
+.char:hover, .char:focus-visible { border-color: var(--ember); outline: none; }
+.char[aria-pressed="true"] { border-color: var(--visor); }
+.cname { font: 700 18px/1.1 var(--display); margin-top: 4px; }
+.clatin { color: var(--muted); font-size: 11px; font-style: italic; }
+.cpreset { color: var(--ember); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+.cblurb { color: var(--ink); }
+.cspecial { color: var(--visor); font-size: 11px; }
+.cstats { display: grid; gap: 3px; margin-top: 4px; }
+.stat-row { display: grid; grid-template-columns: 48px 1fr 40px; gap: 6px; align-items: center; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.stat-row .bar { height: 6px; background: var(--line); position: relative; }
+.stat-row .bar i { position: absolute; inset: 0 auto 0 0; background: var(--ember); }
+.stat-row .sv { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+#chars .hint { margin: 0; color: var(--muted); font-size: 12px; text-align: center; }
+#chars kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
+
+.keys {
+  position: fixed; left: 16px; top: calc(env(safe-area-inset-top, 0px) + 58px);
+  color: var(--muted); font-size: 12px; pointer-events: none;
+}
+.keys kbd { font: 500 11px var(--mono); color: var(--ink); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
+
+#win, #dead {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(360px, calc(100% - 32px)); box-sizing: border-box;
+  background: var(--glass); border: 1px solid var(--line); border-radius: 2px;
+  padding: 20px 22px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  display: grid; gap: 10px;
+}
+#win h2, #dead h2 { margin: 0; font: 700 26px/1.05 var(--display); text-wrap: balance; }
+#win p, #dead p { margin: 0; color: var(--muted); }
+#dead h2 { color: var(--hot); }
+#dead-time { font: 700 28px/1 var(--display); color: var(--muted); font-variant-numeric: tabular-nums; }
+#win-time { font: 700 34px/1 var(--display); color: var(--ember); font-variant-numeric: tabular-nums; }
+
+#panel {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 300px; box-sizing: border-box; overflow-y: auto;
+  background: var(--glass); border-left: 1px solid var(--line);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
+  display: grid; align-content: start; gap: 12px; user-select: text; -webkit-user-select: text;
+}
+#panel header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#panel h2 { margin: 0; font: 700 18px var(--display); letter-spacing: 0.04em; }
+#panel p.note { margin: 0; color: var(--muted); font-size: 12px; }
+#tunables { display: grid; gap: 10px; }
+#tunables h3 { margin: 6px 0 0; font: 500 10px var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--ember); }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: baseline; }
+.row label { font-size: 12px; }
+.row output { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.row input, .row select { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--ember); }
+.row select { font: 12px var(--mono); color: var(--ink); background: var(--night); border: 1px solid var(--line); border-radius: 4px; padding: 5px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#tune-json { width: 100%; box-sizing: border-box; min-height: 160px; font: 11px var(--mono); color: var(--ink); background: var(--night); border: 1px solid var(--line); border-radius: 4px; padding: 8px; resize: vertical; }
+
+#cycle {
+  position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none;
+}
+#food { display: flex; gap: 5px; align-items: center; }
+#food i { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--muted); box-sizing: border-box; }
+#food i.full { background: #c8d43c; border-color: #c8d43c; box-shadow: 0 0 6px rgba(200, 212, 60, 0.6); }
+#food b { width: 2px; height: 14px; background: var(--ink); margin: 0 3px; }
+#raintimer { display: flex; gap: 2px; }
+#raintimer i { width: 4px; height: 7px; background: #566670; }
+#raintimer i.gone { background: #1d2228; }
+#raintimer.warn i:not(.gone) { background: #c2412b; }
+#raintimer.rain i { background: #2fa6c8; animation: pour 0.4s linear infinite; }
+@keyframes pour { 50% { opacity: 0.3; } }
+#cycle-label { font: 500 10px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+#minimap {
+  position: fixed; right: 16px; top: calc(env(safe-area-inset-top, 0px) + 70px); width: 200px; height: 110px;
+  image-rendering: pixelated; pointer-events: none; opacity: 0.9;
+}
+#sleep {
+  position: fixed; inset: 0; background: #0b0d10; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; color: var(--ink); transition: opacity 0.6s; z-index: 5;
+}
+#sleep h2 { margin: 0; font: 700 30px/1 var(--display); letter-spacing: 0.06em; }
+#sleep p { margin: 0; color: var(--muted); font: 500 12px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; }
+#toast {
+  position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 70px); transform: translateX(-50%);
+  background: var(--glass); border: 1px solid var(--line); border-radius: 2px; padding: 8px 12px; font-size: 12px;
+  max-width: calc(100% - 32px); box-sizing: border-box;
+}
+
+#stick {
+  position: fixed; left: var(--ox); top: var(--oy); width: 96px; height: 96px; margin: -48px 0 0 -48px;
+  border-radius: 50%; border: 1px solid var(--line); background: rgba(11, 13, 16, 0.35); pointer-events: none;
+}
+#stick::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px;
+  border-radius: 50%; background: rgba(235, 232, 244, 0.5); transform: translate(var(--kx), var(--ky));
+}
+#dash-btn {
+  display: none; position: fixed; right: 20px; bottom: calc(env(safe-area-inset-bottom, 0px) + 72px);
+  width: 76px; height: 76px; border-radius: 50%; font: 700 13px var(--display); letter-spacing: 0.08em;
+  color: var(--night); background: var(--ember); border: 0; touch-action: none;
+}
+@media (pointer: coarse) {
+  #dash-btn { display: block; }
+  .keys { display: none; }
+}
+@media (max-width: 760px) {
+  #char-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  #minimap { width: 120px; height: 66px; top: calc(env(safe-area-inset-top, 0px) + 64px); }
+  #cycle { bottom: calc(env(safe-area-inset-bottom, 0px) + 120px); }
+  .vitals-box { --vs: 1.5; } /* 3 device px per art px on 2x phones */
+  #panel { top: auto; left: 0; width: 100%; max-height: 62%; border-left: 0; border-top: 1px solid var(--line); border-radius: 0; }
+  .brand { display: none; }
+  .hud { justify-content: flex-end; }
+  .stats { gap: 14px; }
+  .stat b { font-size: 18px; white-space: nowrap; }
+  .keys { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #chars, #win, #panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+</style>
+</head>
+<body>
+
+<canvas id="game" aria-label="Isometric play area"></canvas>
+
+<div class="hud">
+  <div class="brand">Biometric<small id="hud-biome">Prototype 0.9 · Pump Yard</small></div>
+  <div class="stats">
+    <div class="stat"><b class="shards" id="hud-shards">0 / 0</b><span>Cells</span></div>
+    <div class="stat"><b id="hud-kills">0</b><span>Kills</span></div>
+    <div class="stat"><b id="hud-time">0:00.00</b><span>Time</span></div>
+    <div class="stat"><b id="hud-bpm">60</b><span id="hud-bpm-label">BPM</span></div>
+    <div class="stat"><div id="hud-dash" class="ready"></div><span>Dash</span></div>
+  </div>
+</div>
+
+<div class="vitals-box" aria-label="Vitals">
+  <canvas id="vitals" aria-hidden="true"></canvas>
+  <div class="vitals-cap"><span><span id="cap-hp">10 / 10</span> health</span><span><span id="cap-ch">10 / 30</span> charges</span></div>
+</div>
+<div class="keys"><kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>M</kbd> map · <kbd>N</kbd> sound · <kbd>R</kbd> restart · <kbd>T</kbd> tune</div>
+<button class="btn" id="tune-btn" type="button" aria-expanded="false" aria-controls="panel">Tune</button>
+<button class="btn" id="bug-btn" type="button">Bug</button>
+<button id="dash-btn" type="button">DASH</button>
+<div id="stick" hidden></div>
+
+<section id="chars" aria-label="Choose your bug">
+  <header>
+    <h1>Biometric</h1>
+    <p>Choose your bug. Each one moves with its own personality; the dung beetle plays by its own rules.
+    Collect every battery in the Sprawl. Dashes cost charge. Eat gnats, and before the rain comes, curl up in a shelter hatch: the downpour kills. Cotton stainers hunt in pairs and hear you land; cocoons shoot webs.</p>
+  </header>
+  <div id="char-grid"></div>
+  <p class="hint">Click a bug, or use the arrow keys and Enter. In game: <kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>C</kbd> change bug · <kbd>M</kbd> map · <kbd>N</kbd> sound · <kbd>T</kbd> tune</p>
+</section>
+
+<section id="dead" hidden>
+  <h2>Signal lost</h2>
+  <div id="dead-time" class="big-time">0:00.00</div>
+  <p id="dead-stats"></p>
+  <div class="actions"><button class="btn" id="again-dead" type="button">Try again (R)</button></div>
+</section>
+
+<section id="win" hidden>
+  <h2>All cells collected</h2>
+  <div id="win-time">0:00.00</div>
+  <p id="win-best"></p>
+  <div class="actions"><button class="btn" id="again" type="button">Run again (R)</button></div>
+</section>
+
+<aside id="panel" hidden aria-label="Tunables">
+  <header><h2>Tunables</h2><button class="btn" id="close-panel" type="button">Close</button></header>
+  <p class="note">Changes apply instantly. Defaults come from docs/SPEC.md. Copy the values back to me when a feel is right.</p>
+  <div id="tunables"></div>
+  <div class="actions">
+    <button class="btn" id="copy-tune" type="button">Copy values</button>
+    <button class="btn" id="reset-tune" type="button">Reset to spec</button>
+  </div>
+  <textarea id="tune-json" hidden readonly aria-label="Current tunables as JSON"></textarea>
+</aside>
+
+<div id="toast" hidden role="status"></div>
+<div id="cycle" aria-label="Food and rain timer">
+  <div id="food"></div>
+  <div id="raintimer"></div>
+  <div id="cycle-label">Cycle 1</div>
+</div>
+<canvas id="minimap" aria-label="Map"></canvas>
+<section id="sleep" hidden><h2 id="sleep-title">Cycle 2</h2><p id="sleep-text"></p></section>
+
+<script type="module" src="src/main.js"></script>
+<!-- page:end -->
+</body>
+</html>
