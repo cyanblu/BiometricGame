@@ -66,11 +66,21 @@ export function rand(state) {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
 
-export function parseLevel(level) {
-  const rows = level.map;
+export function parseLevel(def) {
+  const rows = def.map;
   const h = rows.length;
   const w = Math.max(...rows.map((r) => r.length));
   const solid = new Uint8Array(w * h);
+  // Terrain: base level per tile, plus slopes. kind 0 flat, 1 ramp, 2 stairs;
+  // (dx, dy) is the direction the slope rises in.
+  const level = new Float32Array(w * h);
+  const kind = new Uint8Array(w * h);
+  const sdx = new Int8Array(w * h), sdy = new Int8Array(w * h);
+  const hrows = def.heights || [];
+  const SLOPES = {
+    '>': [1, 1, 0], '<': [1, -1, 0], v: [1, 0, 1], '^': [1, 0, -1],
+    E: [2, 1, 0], W: [2, -1, 0], S: [2, 0, 1], N: [2, 0, -1],
+  };
   const shards = [];
   const critters = [];
   const vents = [];
@@ -84,9 +94,20 @@ export function parseLevel(level) {
       else if (c === 'B') shards.push({ x: tx + 0.5, y: ty + 0.5, big: true });
       else if (c === 'V') vents.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'b' || c === 's') critters.push({ x: tx + 0.5, y: ty + 0.5 });
+      const hc = (hrows[ty] ?? '')[tx] ?? '0';
+      const i = ty * w + tx;
+      if (SLOPES[hc]) [kind[i], sdx[i], sdy[i]] = SLOPES[hc];
+      else level[i] = Number(hc) || 0;
     }
   }
-  return { name: level.name, w, h, solid, shards, critters, vents, spawn };
+  // A slope starts at the level of the flat tile on its low side.
+  for (let i = 0; i < w * h; i++) {
+    if (!kind[i]) continue;
+    const tx = i % w, ty = Math.floor(i / w);
+    const lx = tx - sdx[i], ly = ty - sdy[i];
+    level[i] = lx >= 0 && ly >= 0 && lx < w && ly < h ? level[ly * w + lx] : 0;
+  }
+  return { name: def.name, w, h, solid, level, kind, sdx, sdy, shards, critters, vents, spawn };
 }
 
 export function isSolid(map, tx, ty) {
@@ -94,11 +115,51 @@ export function isSolid(map, tx, ty) {
   return map.solid[ty * map.w + tx] === 1;
 }
 
+// Two surfaces meet if their heights differ by less than this (in levels).
+export const LEVEL_TOL = 0.12;
+
+// Height (in levels) of tile (tx, ty)'s surface at world point (x, y),
+// clamped into the tile. Ramps and stairs rise by one level across the tile.
+export function tileLevelAt(map, tx, ty, x, y) {
+  if (tx < 0 || ty < 0 || tx >= map.w || ty >= map.h) return 0;
+  const i = ty * map.w + tx;
+  const base = map.level[i];
+  if (!map.kind[i]) return base;
+  const fx = Math.min(1, Math.max(0, x - tx)), fy = Math.min(1, Math.max(0, y - ty));
+  const dx = map.sdx[i], dy = map.sdy[i];
+  const f = dx > 0 ? fx : dx < 0 ? 1 - fx : dy > 0 ? fy : 1 - fy;
+  return base + f;
+}
+
+export function groundLevel(map, x, y) {
+  return tileLevelAt(map, Math.floor(x), Math.floor(y), x, y);
+}
+
+// Can something standing on tile (ox, oy) touch tile (tx, ty) at point (cx, cy)?
+// Walls never; otherwise both surfaces must be at the same height there.
+export function blocks(map, ox, oy, tx, ty, cx, cy) {
+  if (isSolid(map, tx, ty)) return true;
+  if (tx === ox && ty === oy) return false;
+  return Math.abs(tileLevelAt(map, tx, ty, cx, cy) - tileLevelAt(map, ox, oy, cx, cy)) > LEVEL_TOL;
+}
+
+// Open edge between 4-neighbours a and b (used for reachability checks).
+export function edgeOpen(map, ax, ay, bx, by) {
+  if (isSolid(map, ax, ay) || isSolid(map, bx, by)) return false;
+  // Sample the shared edge at both ends and the middle.
+  const ex = bx > ax ? bx : bx < ax ? ax : null, ey = by > ay ? by : by < ay ? ay : null;
+  for (const t of [0.05, 0.5, 0.95]) {
+    const x = ex ?? ax + t, y = ey ?? ay + t;
+    if (Math.abs(tileLevelAt(map, ax, ay, x, y) - tileLevelAt(map, bx, by, x, y)) > LEVEL_TOL) return false;
+  }
+  return true;
+}
+
 // A new spider. Spiders have ids because they come and go (vents, corpses).
 export function makeSpider(state, x, y, extra = {}) {
   const c = {
     id: state.nextId++,
-    x, y, px: x, py: y, vx: 0, vy: 0,
+    x, y, z: groundLevel(state.map, x, y), px: x, py: y, vx: 0, vy: 0,
     dirX: 0, dirY: 0, timer: 0, fleeing: false,
     alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
     lungeX: 0, lungeY: 0, stateTime: 0, stateTotal: 0, deadTime: 0,
@@ -120,7 +181,7 @@ export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
     hits: 0,
     map,
     player: {
-      x: map.spawn.x, y: map.spawn.y,
+      x: map.spawn.x, y: map.spawn.y, z: groundLevel(map, map.spawn.x, map.spawn.y),
       px: map.spawn.x, py: map.spawn.y, // position before the last step, for render interpolation
       vx: 0, vy: 0,
       faceX: Math.SQRT1_2, faceY: Math.SQRT1_2,
@@ -181,13 +242,14 @@ function approach(vx, vy, tx, ty, maxDelta) {
 function resolveWalls(map, p, r, vels) {
   for (let pass = 0; pass < 4; pass++) {
     let hit = false;
+    const ox = Math.floor(p.x), oy = Math.floor(p.y); // the tile it stands on
     const x0 = Math.floor(p.x - r), x1 = Math.floor(p.x + r);
     const y0 = Math.floor(p.y - r), y1 = Math.floor(p.y + r);
     for (let ty = y0; ty <= y1; ty++) {
       for (let tx = x0; tx <= x1; tx++) {
-        if (!isSolid(map, tx, ty)) continue;
         const cx = Math.min(Math.max(p.x, tx), tx + 1);
         const cy = Math.min(Math.max(p.y, ty), ty + 1);
+        if (!blocks(map, ox, oy, tx, ty, cx, cy)) continue;
         let nx = p.x - cx;
         let ny = p.y - cy;
         const d2 = nx * nx + ny * ny;
@@ -230,7 +292,10 @@ function move(map, p, mv, dt, r) {
     p.y += mv.vy * h;
     resolveWalls(map, p, r, [mv, p]);
   }
+  p.z = groundLevel(map, p.x, p.y);
 }
+
+const SAME_FLOOR = 0.5; // vertical reach for pickups, hits and kills (levels)
 
 // input: { x, y } screen-space stick in [-1, 1], dash: true on the step the
 // button went down.
@@ -304,7 +369,7 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   const reach = r + params.pickupRange;
   for (const s of state.shards) {
     if (s.taken) continue;
-    if (Math.hypot(s.x - p.x, s.y - p.y) <= reach) {
+    if (Math.hypot(s.x - p.x, s.y - p.y) <= reach && Math.abs(groundLevel(state.map, s.x, s.y) - p.z) < SAME_FLOOR) {
       s.taken = true;
       state.collected++;
       const gain = s.big ? params.bigCharge : params.smallCharge;
@@ -495,24 +560,25 @@ function stepSpiders(state, params, dt, dashing) {
     // Pressed against a wall while wandering: pick a new direction next step.
     if (c.mode === 'wander' && want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
 
-    if (dashing && dist(c, p) < contact + params.killMargin) { killSpider(state, c); continue; }
-    if (c.mode === 'lunge' && !c.hitDone && dist(c, p) < contact + 0.05) {
+    const sameFloor = Math.abs(c.z - p.z) < SAME_FLOOR;
+    if (dashing && sameFloor && dist(c, p) < contact + params.killMargin) { killSpider(state, c); continue; }
+    if (c.mode === 'lunge' && !c.hitDone && sameFloor && dist(c, p) < contact + 0.05) {
       c.hitDone = true;
       hitPlayer(state, c, params);
     }
   }
 }
 
-// Smallest gap between the player circle and any wall; negative = overlap.
+// Smallest gap between a circle and anything that blocks it (walls, and
+// tiles at another height); negative = overlap.
 export function wallClearance(state, r, p = state.player) {
   let best = Infinity;
-  const x0 = Math.floor(p.x) - 2, x1 = Math.floor(p.x) + 2;
-  const y0 = Math.floor(p.y) - 2, y1 = Math.floor(p.y) + 2;
-  for (let ty = y0; ty <= y1; ty++) {
-    for (let tx = x0; tx <= x1; tx++) {
-      if (!isSolid(state.map, tx, ty)) continue;
+  const ox = Math.floor(p.x), oy = Math.floor(p.y);
+  for (let ty = oy - 2; ty <= oy + 2; ty++) {
+    for (let tx = ox - 2; tx <= ox + 2; tx++) {
       const cx = Math.min(Math.max(p.x, tx), tx + 1);
       const cy = Math.min(Math.max(p.y, ty), ty + 1);
+      if (!blocks(state.map, ox, oy, tx, ty, cx, cy)) continue;
       const inside = p.x > tx && p.x < tx + 1 && p.y > ty && p.y < ty + 1;
       const d = inside ? -1 : Math.hypot(p.x - cx, p.y - cy);
       best = Math.min(best, d - r);

@@ -3,7 +3,8 @@
 Isometric top-down pixel-art game prototype. You are a small mechanical bug
 in a rain-soaked industrial ruin: collect every battery as fast as you can.
 Each dash burns a charge (start 10, max 30); small cells give 3, big red
-batteries 9. Spiders crawl out of vents and only attack in pairs; dash
+batteries 9. The yard has several levels joined by ramps and stairs.
+Spiders crawl out of vents and only attack in pairs; dash
 through them to kill them. You have 10 health. Hits and dashes heat your
 core; overheat and you lose your dash and slow to a crawl.
 Bodies and legs are animated procedurally (second-order f/ζ/r motion plus
@@ -43,6 +44,6 @@ src/pixel.js       palette + pixel filter (quantize, ordered dither)
 src/render.js      isometric renderer: low-res frame, lighting, rain, blood
 src/vitals.js      health/charge panel (biomechanical pixel sprite)
 src/main.js        loop, input, HUD, tunables panel
-test/*.test.js     headless tests (node:test)
+test/*.test.js     headless tests (node:test), incl. terrain + reachability
 tools/build.mjs    single-file bundle
 ```

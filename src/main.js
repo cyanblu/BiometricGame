@@ -1,5 +1,5 @@
 // Browser entry: fixed-timestep loop, input, HUD and the tunables panel.
-import { createState, step, STEP, DEFAULT_PARAMS, isSolid } from './sim.js';
+import { createState, step, STEP, DEFAULT_PARAMS, isSolid, groundLevel } from './sim.js';
 import { createRenderer, LOOK_DEFAULTS } from './render.js';
 import { LEVELS } from './levels.js';
 import { createRig, updateRig, setRigMotion, RIG_DEFAULTS, SPIDER_RIG } from './bug.js';
@@ -65,7 +65,10 @@ function start(snapshot) {
   const renderer = createRenderer(canvas);
   let levelIndex = 0;
   let state = createState(LEVELS[levelIndex]);
-  const blocked = (x, y) => isSolid(state.map, Math.floor(x), Math.floor(y));
+  // Where a bug's foot may land: not on a wall, and not on ground at another
+  // level than the body (no feet dangling down cliffs). Steps and ramps are fine.
+  const footBlocked = (rig) => (x, y) => isSolid(state.map, Math.floor(x), Math.floor(y))
+    || Math.abs(groundLevel(state.map, x, y) - groundLevel(state.map, rig.pos.x, rig.pos.y)) > 0.6;
   let rigs;
   function makeRigs() {
     const p = state.player;
@@ -418,11 +421,12 @@ function start(snapshot) {
       bodyF: rigOpts.bodyF * (1 + 0.8 * p.heat),
       bodyZeta: rigOpts.bodyZeta * (1 - 0.6 * p.heat),
     });
-    updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy }, blocked);
+    updateRig(rigs.player, adt, { x: ix, y: iy, vx: p.vx, vy: p.vy }, footBlocked(rigs.player));
     for (const c of state.critters) {
       if (!c.alive) continue; // corpses stay where they fell
       const cx = c.px + (c.x - c.px) * view.alpha, cy = c.py + (c.y - c.py) * view.alpha;
-      updateRig(rigs.critters.get(c.id), adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, blocked);
+      const rig = rigs.critters.get(c.id);
+      updateRig(rig, adt, { x: cx, y: cy, vx: c.vx, vy: c.vy }, footBlocked(rig));
     }
     vitalsFlash = Math.max(0, vitalsFlash - dt);
     vitals.draw({

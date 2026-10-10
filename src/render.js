@@ -3,13 +3,15 @@
 // (one art pixel = `look.pixel` world pixels, whatever the zoom), lit, snapped
 // to the palette in src/pixel.js, then scaled up by a whole number without
 // smoothing. Zoom only changes that whole-number scale, never the art.
-import { TILE_W, TILE_H, isSolid } from './sim.js';
+import { TILE_W, TILE_H, isSolid, groundLevel, tileLevelAt } from './sim.js';
 import { hipOf, legIK } from './bug.js';
 import { COLORS, buildLut, quantize } from './pixel.js';
 
 const C = COLORS;
 const WALL_H = 34;
 const Z_PX = 36; // world pixels per tile of height
+const LEVEL_PX = 24; // world pixels per terrain level
+const LEVEL_Z = LEVEL_PX / Z_PX; // one terrain level in rig height units
 const HW = TILE_W / 2;
 const HH = TILE_H / 2;
 
@@ -43,7 +45,13 @@ export function createRenderer(canvas) {
 
   const sx = (x, y) => (x - y) * HW;
   const sy = (x, y) => (x + y) * HH;
-  const P3 = (x, y, z) => [sx(x, y), sy(x, y) - z * Z_PX];
+  // Terrain of the level being drawn; set at the start of every frame.
+  let map = null;
+  const lvAt = (x, y) => (map ? groundLevel(map, x, y) : 0);
+  const liftAt = (x, y) => lvAt(x, y) * LEVEL_PX;
+  // Ground offset (rig height units) added by P3; set per creature while drawing it.
+  let baseZ = 0;
+  const P3 = (x, y, z) => [sx(x, y), sy(x, y) - (z + baseZ) * Z_PX];
   const px = (n) => Math.max(n, onePx);
 
   function diamond(x, y, lift, inset = 0) {
@@ -56,10 +64,34 @@ export function createRenderer(canvas) {
     ctx.closePath();
   }
 
-  // Point on a wall face: u along the bottom edge (0..1), v up the face (0..1).
+  // Point on a vertical face: u along its edge (0..1), v from its bottom (0) to
+  // its top (1). Bottom and top heights (world px) can differ at each end.
   function facePoint(face, u, v) {
     const [x, y] = face.side === 'y' ? [face.tx + u, face.ty + 1] : [face.tx + 1, face.ty + u];
-    return [sx(x, y), sy(x, y) - v * WALL_H];
+    const b = face.b0 + (face.b1 - face.b0) * u, t = face.t0 + (face.t1 - face.t0) * u;
+    return [sx(x, y), sy(x, y) - (b + v * (t - b))];
+  }
+
+  // Corner height (world px) of a tile's surface at grid point (gx, gy).
+  const cornerPx = (tx, ty, gx, gy) => tileLevelAt(map, tx, ty, gx, gy) * LEVEL_PX;
+
+  // The visible faces (+y and +x sides) of a column whose top edge heights are
+  // given by topAt(gx, gy). A face runs down to the neighbour's surface; a
+  // wall neighbour hides it.
+  function columnFaces(tx, ty, topAt) {
+    const faces = [];
+    for (const side of ['y', 'x']) {
+      const [nx, ny] = side === 'y' ? [tx, ty + 1] : [tx + 1, ty];
+      const [g0, g1] = side === 'y' ? [[tx, ty + 1], [tx + 1, ty + 1]] : [[tx + 1, ty], [tx + 1, ty + 1]];
+      const outside = nx >= map.w || ny >= map.h;
+      if (!outside && isSolid(map, nx, ny)) continue;
+      const t0 = topAt(...g0), t1 = topAt(...g1);
+      const b0 = outside ? 0 : Math.min(t0, cornerPx(nx, ny, ...g0));
+      const b1 = outside ? 0 : Math.min(t1, cornerPx(nx, ny, ...g1));
+      if (t0 - b0 < 0.5 && t1 - b1 < 0.5) continue;
+      faces.push({ side, tx, ty, b0, b1, t0, t1 });
+    }
+    return faces;
   }
   function faceQuad(face, u0, u1, v0, v1) {
     const a = facePoint(face, u0, v0), b = facePoint(face, u1, v0);
@@ -68,6 +100,32 @@ export function createRenderer(canvas) {
   }
 
   // ---- floor ---------------------------------------------------------------
+  // Raised floors are riveted deck plates, so each level reads apart from the
+  // concrete yard below. Higher decks are darker grating.
+  function drawDeck(tx, ty, level) {
+    const n = hash(tx, ty, 7);
+    diamond(tx, ty, 0);
+    ctx.fillStyle = level >= 2 ? C.metal1 : n < 0.5 ? C.metal2 : C.metal1; ctx.fill();
+    ctx.strokeStyle = C.metal0; ctx.lineWidth = px(1); ctx.stroke();
+    if (level >= 2) {
+      // Grating: a lattice of slots.
+      ctx.strokeStyle = C.void1;
+      for (let k = 1; k < 5; k++) {
+        const f = k / 5;
+        ctx.beginPath(); ctx.moveTo(sx(tx + f, ty + 0.1), sy(tx + f, ty + 0.1)); ctx.lineTo(sx(tx + f, ty + 0.9), sy(tx + f, ty + 0.9)); ctx.stroke();
+      }
+    } else {
+      diamond(tx, ty, 0, 0.1);
+      ctx.strokeStyle = C.metal3; ctx.stroke();
+    }
+    ctx.fillStyle = C.metal4;
+    for (const [a, b] of [[0.14, 0.14], [0.86, 0.14], [0.86, 0.86], [0.14, 0.86]]) {
+      ctx.fillRect(sx(tx + a, ty + b) - onePx / 2, sy(tx + a, ty + b) - onePx / 2, onePx, onePx);
+    }
+    if (hash(tx, ty, 8) < 0.35) floorBlob(tx + 0.3 + hash(tx, ty, 9) * 0.4, ty + 0.3 + hash(tx, ty, 10) * 0.4, 0.14, C.rust0);
+    if (hash(tx, ty, 11) < 0.2) floorBlob(tx + 0.2 + hash(tx, ty, 12) * 0.6, ty + 0.2 + hash(tx, ty, 13) * 0.6, 0.1, C.moss1);
+  }
+
   function floorBlob(cx, cy, r, color) {
     const X = sx(cx, cy), Y = sy(cx, cy);
     ctx.fillStyle = color;
@@ -117,6 +175,124 @@ export function createRenderer(canvas) {
       }
       ctx.stroke();
     }
+  }
+
+  // ---- terrain columns -------------------------------------------------------
+  // Earth/concrete cliff faces under raised floors and slopes.
+  function decorateCliff(face) {
+    const { tx, ty } = face, k = face.side === 'y' ? 200 : 250;
+    // Strata line and grime at the foot.
+    ctx.strokeStyle = C.conc0; ctx.lineWidth = px(1);
+    ctx.beginPath(); ctx.moveTo(...facePoint(face, 0, 0.5)); ctx.lineTo(...facePoint(face, 1, 0.5)); ctx.stroke();
+    faceQuad(face, 0, 1, 0, 0.18); ctx.fillStyle = C.grime; ctx.fill();
+    if (hash(tx, ty, k + 1) < 0.5) {
+      const u = 0.1 + hash(tx, ty, k + 2) * 0.7;
+      faceQuad(face, u, u + 0.1, 1, 0.3); ctx.fillStyle = C.rust0; ctx.fill();
+    }
+    if (hash(tx, ty, k + 3) < 0.3) {
+      // Drain outlet weeping rust.
+      const u = 0.25 + hash(tx, ty, k + 4) * 0.5;
+      faceQuad(face, u, u + 0.14, 0.45, 0.8); ctx.fillStyle = C.metal2; ctx.fill();
+      faceQuad(face, u + 0.03, u + 0.11, 0.5, 0.75); ctx.fillStyle = C.void0; ctx.fill();
+      faceQuad(face, u + 0.05, u + 0.09, 0.05, 0.5); ctx.fillStyle = C.rust1; ctx.fill();
+    }
+    // Moss over the lip.
+    ctx.fillStyle = C.moss1;
+    for (let i = 0; i < 4; i++) {
+      if (hash(tx, ty, k + 10 + i) < 0.5) continue;
+      const u = hash(tx, ty, k + 20 + i) * 0.9;
+      faceQuad(face, u, u + 0.08, 1, 0.75 - hash(tx, ty, k + 30 + i) * 0.3); ctx.fill();
+    }
+  }
+
+  // Point on a slope tile: f along the rise (0 low .. 1 high), g across it.
+  function slopeXY(tx, ty, dx, dy, f, g) {
+    if (dx > 0) return [tx + f, ty + g];
+    if (dx < 0) return [tx + 1 - f, ty + g];
+    if (dy > 0) return [tx + g, ty + f];
+    return [tx + g, ty + 1 - f];
+  }
+  function slopeQuad(tx, ty, dx, dy, f0, f1, h0, h1) {
+    const pts = [[f0, 0, h0], [f1, 0, h1], [f1, 1, h1], [f0, 1, h0]];
+    ctx.beginPath();
+    pts.forEach(([f, g, hh], i) => {
+      const [x, y] = slopeXY(tx, ty, dx, dy, f, g);
+      if (i) ctx.lineTo(sx(x, y), sy(x, y) - hh); else ctx.moveTo(sx(x, y), sy(x, y) - hh);
+    });
+    ctx.closePath();
+  }
+
+  function drawRamp(tx, ty, dx, dy, base) {
+    slopeQuad(tx, ty, dx, dy, 0, 1, base, base + LEVEL_PX);
+    ctx.fillStyle = C.conc2; ctx.fill();
+    // Grip grooves across the slope.
+    ctx.strokeStyle = C.conc1; ctx.lineWidth = px(1);
+    for (let i = 1; i < 6; i++) {
+      const f = i / 6;
+      const [ax, ay] = slopeXY(tx, ty, dx, dy, f, 0.06), [bx, by] = slopeXY(tx, ty, dx, dy, f, 0.94);
+      const hh = base + f * LEVEL_PX;
+      ctx.beginPath(); ctx.moveTo(sx(ax, ay), sy(ax, ay) - hh); ctx.lineTo(sx(bx, by), sy(bx, by) - hh); ctx.stroke();
+    }
+    // Worn hazard paint at the foot.
+    ctx.save();
+    slopeQuad(tx, ty, dx, dy, 0.02, 0.1, base + 0.02 * LEVEL_PX, base + 0.1 * LEVEL_PX);
+    ctx.clip();
+    for (let i = 0; i < 6; i++) {
+      const [x, y] = slopeXY(tx, ty, dx, dy, 0.06, i / 6 + 0.04);
+      ctx.fillStyle = i % 2 ? C.void1 : C.lamp0;
+      ctx.fillRect(sx(x, y) - 3, sy(x, y) - base - 4, 6, 8);
+    }
+    ctx.restore();
+  }
+
+  function drawStairs(tx, ty, dx, dy, base) {
+    const N = 4;
+    // Risers face the low side; they are visible when that side faces the camera.
+    const risersVisible = dx < 0 || dy < 0;
+    const order = [...Array(N).keys()];
+    if (risersVisible) order.reverse(); // draw back to front
+    for (const k of order) {
+      const f0 = k / N, f1 = (k + 1) / N, h = base + f1 * LEVEL_PX;
+      slopeQuad(tx, ty, dx, dy, f0, f1, h, h);
+      ctx.fillStyle = k % 2 ? C.conc3 : C.conc2; ctx.fill();
+      // Worn nosing on the tread edge.
+      const [ax, ay] = slopeXY(tx, ty, dx, dy, f0, 0), [bx, by] = slopeXY(tx, ty, dx, dy, f0, 1);
+      ctx.strokeStyle = C.metal3; ctx.lineWidth = px(1);
+      ctx.beginPath(); ctx.moveTo(sx(ax, ay), sy(ax, ay) - h); ctx.lineTo(sx(bx, by), sy(bx, by) - h); ctx.stroke();
+      if (risersVisible) {
+        const hl = base + f0 * LEVEL_PX;
+        ctx.beginPath();
+        ctx.moveTo(sx(ax, ay), sy(ax, ay) - hl); ctx.lineTo(sx(bx, by), sy(bx, by) - hl);
+        ctx.lineTo(sx(bx, by), sy(bx, by) - h); ctx.lineTo(sx(ax, ay), sy(ax, ay) - h);
+        ctx.closePath(); ctx.fillStyle = C.conc0; ctx.fill();
+      }
+    }
+  }
+
+  // A raised floor, ramp or stairs tile, with its cliff faces.
+  function drawColumn(tx, ty, t, alpha = 1) {
+    ctx.globalAlpha = alpha;
+    const i = ty * map.w + tx;
+    for (const f of columnFaces(tx, ty, (gx, gy) => cornerPx(tx, ty, gx, gy))) {
+      faceQuad(f, 0, 1, 0, 1);
+      ctx.fillStyle = f.side === 'y' ? C.conc0 : C.void2; ctx.fill();
+      decorateCliff(f);
+    }
+    const base = map.level[i] * LEVEL_PX;
+    if (map.kind[i] === 1) drawRamp(tx, ty, map.sdx[i], map.sdy[i], base);
+    else if (map.kind[i] === 2) drawStairs(tx, ty, map.sdx[i], map.sdy[i], base);
+    else {
+      ctx.save(); ctx.translate(0, -base);
+      drawDeck(tx, ty, map.level[i]);
+      // Worn bright lip along the front edges, so the drop reads.
+      ctx.strokeStyle = C.metal4; ctx.lineWidth = px(2);
+      ctx.beginPath();
+      ctx.moveTo(sx(tx, ty + 1), sy(tx, ty + 1)); ctx.lineTo(sx(tx + 1, ty + 1), sy(tx + 1, ty + 1)); ctx.lineTo(sx(tx + 1, ty), sy(tx + 1, ty));
+      ctx.stroke();
+      ctx.restore();
+      drawTileBlood(tx, ty, base, true);
+    }
+    ctx.globalAlpha = 1;
   }
 
   // ---- walls ---------------------------------------------------------------
@@ -170,16 +346,17 @@ export function createRenderer(canvas) {
     }
   }
 
-  function drawWall(map, tx, ty, t, alpha = 1) {
+  function wallTop(tx, ty) { return map.level[ty * map.w + tx] * LEVEL_PX + WALL_H; }
+
+  function drawWall(tx, ty, t, alpha = 1) {
     ctx.globalAlpha = alpha;
-    const faces = [];
-    if (!isSolid(map, tx, ty + 1) || ty + 1 >= map.h) faces.push({ side: 'y', tx, ty, color: C.metal1 });
-    if (!isSolid(map, tx + 1, ty) || tx + 1 >= map.w) faces.push({ side: 'x', tx, ty, color: C.metal0 });
-    for (const f of faces) {
+    const top = wallTop(tx, ty);
+    for (const f of columnFaces(tx, ty, () => top)) {
       faceQuad(f, 0, 1, 0, 1);
-      ctx.fillStyle = f.color; ctx.fill();
+      ctx.fillStyle = f.side === 'y' ? C.metal1 : C.metal0; ctx.fill();
       decorateFace(f, t);
     }
+    const WALL_H = top; // lift of the top face (shadows the module constant)
     diamond(tx, ty, WALL_H);
     ctx.fillStyle = C.metal3; ctx.fill();
     diamond(tx, ty, WALL_H, 0.12);
@@ -198,11 +375,11 @@ export function createRenderer(canvas) {
     ctx.globalAlpha = 1;
   }
 
-  // True when a wall drawn after the player would cover its sprite.
-  function hidesPlayer(tx, ty, pr) {
-    const cx = sx(pr.pos.x, pr.pos.y), cy = sy(pr.pos.x, pr.pos.y) - 10;
+  // True when a column (top at `topPx`) drawn after the player covers its sprite.
+  function hidesPlayer(tx, ty, pr, topPx) {
+    const cx = sx(pr.pos.x, pr.pos.y), cy = sy(pr.pos.x, pr.pos.y) - liftAt(pr.pos.x, pr.pos.y) - 10;
     const left = (tx - ty - 1) * HW, right = (tx - ty + 1) * HW;
-    const top = sy(tx, ty) - WALL_H, bottom = sy(tx + 1, ty + 1);
+    const top = sy(tx, ty) - topPx, bottom = sy(tx + 1, ty + 1);
     const R = 26;
     return cx + R > left && cx - R < right && cy + R > top && cy - R < bottom;
   }
@@ -210,7 +387,7 @@ export function createRenderer(canvas) {
   // ---- batteries -----------------------------------------------------------
   // Big red battery: worth three small cells, and looks it.
   function drawBigCell(s, t) {
-    const X = sx(s.x, s.y), Y = sy(s.x, s.y);
+    const X = sx(s.x, s.y), Y = sy(s.x, s.y) - liftAt(s.x, s.y);
     const seed = s.x * 3.1 + s.y * 7.7;
     ctx.fillStyle = C.void1;
     ctx.beginPath(); ctx.ellipse(X, Y, 12, 6, 0, 0, Math.PI * 2); ctx.fill();
@@ -234,7 +411,7 @@ export function createRenderer(canvas) {
 
   function drawCell(s, t) {
     if (s.big) { drawBigCell(s, t); return; }
-    const X = sx(s.x, s.y), Y = sy(s.x, s.y);
+    const X = sx(s.x, s.y), Y = sy(s.x, s.y) - liftAt(s.x, s.y);
     const seed = s.x * 3.1 + s.y * 7.7;
     ctx.fillStyle = C.void1;
     ctx.beginPath(); ctx.ellipse(X, Y, 7, 3.5, 0, 0, Math.PI * 2); ctx.fill();
@@ -283,7 +460,9 @@ export function createRenderer(canvas) {
   function drawLeg(rig, leg, style) {
     const o = rig.opts;
     const hip = hipOf(rig, leg);
-    const foot = { x: leg.foot.x, y: leg.foot.y, z: leg.lift };
+    // Feet stand on whatever ground is under them (steps, ramps).
+    const footGround = (lvAt(leg.foot.x, leg.foot.y) - lvAt(rig.pos.x, rig.pos.y)) * LEVEL_Z;
+    const foot = { x: leg.foot.x, y: leg.foot.y, z: leg.lift + footGround };
     const knee = legIK(hip, foot, o.thigh * o.scale, o.shin * o.scale);
     ctx.strokeStyle = style.limb; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.lineWidth = px(style.legW);
@@ -300,6 +479,12 @@ export function createRenderer(canvas) {
   }
 
   function drawBug(rig, style, t) {
+    baseZ = lvAt(rig.pos.x, rig.pos.y) * LEVEL_Z;
+    drawBugAt(rig, style, t);
+    baseZ = 0;
+  }
+
+  function drawBugAt(rig, style, t) {
     const o = rig.opts, k = o.scale;
     const { x, y } = rig.pos, hd = rig.heading;
     const z = o.bodyHeight * k;
@@ -381,6 +566,12 @@ export function createRenderer(canvas) {
   }
 
   function drawSpiderBody(rig, c, i, t) {
+    baseZ = lvAt(rig.pos.x, rig.pos.y) * LEVEL_Z;
+    drawSpiderAt(rig, c, i, t);
+    baseZ = 0;
+  }
+
+  function drawSpiderAt(rig, c, i, t) {
     const o = rig.opts, k = o.scale, hd = rig.heading;
     const cs = Math.cos(hd), sn = Math.sin(hd);
     const { x, y } = rig.pos;
@@ -432,7 +623,8 @@ export function createRenderer(canvas) {
 
   // Jagged electric arc between two spiders; brighter as the wind-up completes.
   function drawArc(ra, rb, t, charge) {
-    const za = ra.opts.bodyHeight * ra.opts.scale, zb = rb.opts.bodyHeight * rb.opts.scale;
+    const za = ra.opts.bodyHeight * ra.opts.scale + lvAt(ra.pos.x, ra.pos.y) * LEVEL_Z;
+    const zb = rb.opts.bodyHeight * rb.opts.scale + lvAt(rb.pos.x, rb.pos.y) * LEVEL_Z;
     const [x0, y0] = P3(ra.pos.x, ra.pos.y, za), [x1, y1] = P3(rb.pos.x, rb.pos.y, zb);
     const seg = 6, jitter = 3 + charge * 5, frame = Math.floor(t * 24);
     for (const [color, wdt] of [[C.elec1, 2], [C.elec2, 1]]) {
@@ -450,6 +642,8 @@ export function createRenderer(canvas) {
   // ---- vents ---------------------------------------------------------------
   function drawVent(v, t, dt) {
     const tx = Math.floor(v.x), ty = Math.floor(v.y);
+    const lift = liftAt(v.x, v.y);
+    ctx.save(); ctx.translate(0, -lift);
     diamond(tx, ty, 0, 0.12);
     ctx.fillStyle = C.void0; ctx.fill();
     ctx.strokeStyle = C.metal3; ctx.lineWidth = px(1.5); ctx.stroke();
@@ -462,14 +656,15 @@ export function createRenderer(canvas) {
       ctx.lineTo(sx(tx + 0.82, ty + k), sy(tx + 0.82, ty + k));
       ctx.stroke();
     }
+    ctx.restore();
     // Something red breathes down there.
     const glow = 0.5 + 0.5 * Math.sin(t * 1.7 + v.x);
-    lights.push({ x: sx(v.x, v.y), y: sy(v.x, v.y), r: 34, color: C.blood2, glow: 0.12 + glow * 0.12 });
+    lights.push({ x: sx(v.x, v.y), y: sy(v.x, v.y) - lift, r: 34, color: C.blood2, glow: 0.12 + glow * 0.12 });
     if (Math.random() < dt * 1.5) ventPuff(v, 1);
   }
 
   function ventPuff(v, n = 10) {
-    const X = sx(v.x, v.y), Y = sy(v.x, v.y);
+    const X = sx(v.x, v.y), Y = sy(v.x, v.y) - liftAt(v.x, v.y);
     for (let i = 0; i < n; i++) {
       fx.particles.push({
         x: X + (Math.random() - 0.5) * 24, y: Y - 2, vx: (Math.random() - 0.5) * 20, vy: -20 - Math.random() * 25,
@@ -479,48 +674,56 @@ export function createRenderer(canvas) {
   }
 
   // ---- blood layer ---------------------------------------------------------
-  // World-pixel canvas under everything that stands on the floor. Splatters
-  // are generated once, when the kill happens, and stay for the run.
-  const decal = { canvas: null, ctx: null, map: null, x0: 0, y0: 0, w: 0, h: 0, k: 0.5 };
+  // Splatters are generated once, when the kill happens, as lists of floor
+  // dots per tile, and redrawn with their tile every frame, so blood on a
+  // raised floor stays on that floor. Slopes and walls get none.
+  const decal = { map: null, tiles: new Map() };
 
-  function resetDecals(map) {
-    decal.map = map;
-    decal.x0 = -map.h * HW; decal.y0 = -HH;
-    decal.w = (map.w + map.h) * HW; decal.h = (map.w + map.h) * HH + HH * 2;
-    decal.canvas = document.createElement('canvas');
-    decal.canvas.width = Math.ceil(decal.w * decal.k);
-    decal.canvas.height = Math.ceil(decal.h * decal.k);
-    decal.ctx = decal.canvas.getContext('2d');
-    decal.ctx.setTransform(decal.k, 0, 0, decal.k, -decal.x0 * decal.k, -decal.y0 * decal.k);
+  function resetDecals(m) { decal.map = m; decal.tiles = new Map(); }
+
+  function addDot(x, y, r, color) {
+    const m = decal.map, tx = Math.floor(x), ty = Math.floor(y);
+    if (isSolid(m, tx, ty) || m.kind[ty * m.w + tx]) return;
+    const key = ty * m.w + tx;
+    if (!decal.tiles.has(key)) decal.tiles.set(key, []);
+    decal.tiles.get(key).push([x, y, r, color]);
   }
 
   // A circle of radius r tiles lying on the floor.
-  function floorDot(g, x, y, r, color) {
-    g.fillStyle = color;
-    g.beginPath(); g.ellipse(sx(x, y), sy(x, y), r * Math.SQRT2 * HW, r * Math.SQRT2 * HH, 0, 0, Math.PI * 2); g.fill();
+  function floorDot(x, y, r, color, lift = 0) {
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.ellipse(sx(x, y), sy(x, y) - lift, r * Math.SQRT2 * HW, r * Math.SQRT2 * HH, 0, 0, Math.PI * 2); ctx.fill();
   }
 
-  function bloodSplatter(map, x, y, dirX, dirY) {
-    if (decal.map !== map) resetDecals(map);
-    const g = decal.ctx;
-    const open = (px2, py2) => !isSolid(map, Math.floor(px2), Math.floor(py2));
+  function drawTileBlood(tx, ty, lift, clip) {
+    if (decal.map !== map) return;
+    const dots = decal.tiles.get(ty * map.w + tx);
+    if (!dots) return;
+    if (clip) { ctx.save(); diamond(tx, ty, lift); ctx.clip(); }
+    for (const [x, y, r, color] of dots) floorDot(x, y, r, color, lift);
+    if (clip) ctx.restore();
+  }
+
+  function bloodSplatter(m, x, y, dirX, dirY) {
+    if (decal.map !== m) resetDecals(m);
+    const z0 = groundLevel(m, x, y);
+    // Blood stays on the floor it was spilled on.
+    const open = (px2, py2) => !isSolid(m, Math.floor(px2), Math.floor(py2)) && Math.abs(groundLevel(m, px2, py2) - z0) < 0.1;
+    const dot = (px2, py2, r, c) => { if (open(px2, py2)) addDot(px2, py2, r, c); };
     const rnd = Math.random;
     const gauss = () => (rnd() + rnd() + rnd() - 1.5) / 1.5;
     const aim = Math.hypot(dirX, dirY) > 0.1 ? Math.atan2(dirY, dirX) : rnd() * Math.PI * 2;
     // Pool where it died.
-    for (let i = 0; i < 5; i++) {
-      const px2 = x + gauss() * 0.12, py2 = y + gauss() * 0.12;
-      if (open(px2, py2)) floorDot(g, px2, py2, 0.08 + rnd() * 0.14, i < 2 ? C.blood0 : C.blood1);
-    }
-    // Streaks thrown along the dash.
-    g.lineCap = 'round';
+    for (let i = 0; i < 6; i++) dot(x + gauss() * 0.12, y + gauss() * 0.12, 0.08 + rnd() * 0.14, i < 2 ? C.blood0 : C.blood1);
+    // Streaks thrown along the dash, as tapering runs of dots.
     for (let i = 0; i < 6; i++) {
-      const a = aim + gauss() * 0.35, len = 0.3 + rnd() * 0.8;
-      const ex = x + Math.cos(a) * len, ey = y + Math.sin(a) * len;
-      if (!open(ex, ey)) continue;
-      g.strokeStyle = rnd() < 0.3 ? C.blood2 : C.blood1;
-      g.lineWidth = 2 + rnd() * 3;
-      g.beginPath(); g.moveTo(sx(x, y), sy(x, y)); g.lineTo(sx(ex, ey), sy(ex, ey)); g.stroke();
+      const a = aim + gauss() * 0.35, len = 0.3 + rnd() * 0.8, w0 = 0.04 + rnd() * 0.03;
+      const color = rnd() < 0.3 ? C.blood2 : C.blood1;
+      for (let f = 0; f <= 1; f += 0.08) {
+        const px2 = x + Math.cos(a) * len * f, py2 = y + Math.sin(a) * len * f;
+        if (!open(px2, py2)) break;
+        addDot(px2, py2, w0 * (1 - f * 0.6), color);
+      }
     }
     // Droplets: most land close, a few fly far; smaller the further they go.
     // Sized so even small drops survive the pixel filter (>= ~1 art pixel).
@@ -528,25 +731,23 @@ export function createRenderer(canvas) {
     for (let i = 0; i < n; i++) {
       const a = aim + gauss() * 0.9;
       const d = Math.min(2.4, 0.2 - Math.log(1 - rnd() * 0.98) * 0.55);
-      const px2 = x + Math.cos(a) * d, py2 = y + Math.sin(a) * d;
-      if (!open(px2, py2)) continue;
       const r = Math.max(0.03, 0.09 - d * 0.03) * (0.6 + rnd() * 0.8);
-      floorDot(g, px2, py2, r, rnd() < 0.25 ? C.blood2 : C.blood1);
+      dot(x + Math.cos(a) * d, y + Math.sin(a) * d, r, rnd() < 0.25 ? C.blood2 : C.blood1);
     }
   }
 
   // When a corpse leaves the simulation, its dried husk stays on the floor.
-  function bakeHusk(map, x, y) {
-    if (decal.map !== map) resetDecals(map);
-    const g = decal.ctx, hd = Math.random() * Math.PI * 2;
-    floorDot(g, x - Math.cos(hd) * 0.06, y - Math.sin(hd) * 0.06, 0.11, C.void2);
-    floorDot(g, x + Math.cos(hd) * 0.06, y + Math.sin(hd) * 0.06, 0.06, C.void1);
-    g.strokeStyle = C.void1; g.lineWidth = 1.5;
+  function bakeHusk(m, x, y) {
+    if (decal.map !== m) resetDecals(m);
+    const hd = Math.random() * Math.PI * 2;
+    addDot(x - Math.cos(hd) * 0.06, y - Math.sin(hd) * 0.06, 0.11, C.void2);
+    addDot(x + Math.cos(hd) * 0.06, y + Math.sin(hd) * 0.06, 0.06, C.void1);
     for (let i = 0; i < 8; i++) {
       const a = hd + (i / 8) * Math.PI * 2 + 0.2;
-      const mx = x + Math.cos(a) * 0.14, my = y + Math.sin(a) * 0.14;
-      const ex = x + Math.cos(a + 0.5) * 0.1, ey = y + Math.sin(a + 0.5) * 0.1;
-      g.beginPath(); g.moveTo(sx(x, y), sy(x, y)); g.quadraticCurveTo(sx(mx, my), sy(mx, my), sx(ex, ey), sy(ex, ey)); g.stroke();
+      for (let f = 0.3; f <= 1; f += 0.25) {
+        const bend = a + f * 0.6;
+        addDot(x + Math.cos(bend) * 0.17 * f, y + Math.sin(bend) * 0.17 * f, 0.02, C.void1);
+      }
     }
   }
 
@@ -555,7 +756,7 @@ export function createRenderer(canvas) {
     for (let i = 0; i < 16; i++) {
       const a = (i / 16) * Math.PI * 2;
       fx.particles.push({
-        x: sx(x, y), y: sy(x, y) - 10, vx: Math.cos(a) * 80, vy: Math.sin(a) * 50 - 50,
+        x: sx(x, y), y: sy(x, y) - liftAt(x, y) - 10, vx: Math.cos(a) * 80, vy: Math.sin(a) * 50 - 50,
         life: 1, fade: 2, grav: 200, color: i % 3 ? C.cell2 : C.elec2,
       });
     }
@@ -565,7 +766,7 @@ export function createRenderer(canvas) {
     for (let i = 0; i < 18; i++) {
       const a = (i / 18) * Math.PI * 2;
       fx.particles.push({
-        x: sx(x, y), y: sy(x, y) - 8, vx: Math.cos(a) * 110, vy: Math.sin(a) * 70 - 40,
+        x: sx(x, y), y: sy(x, y) - liftAt(x, y) - 8, vx: Math.cos(a) * 110, vy: Math.sin(a) * 70 - 40,
         life: 1, fade: 2.5, grav: 260, color: i % 2 ? C.hot1 : C.bone,
       });
     }
@@ -575,7 +776,7 @@ export function createRenderer(canvas) {
     for (let i = 0; i < 14; i++) {
       const a = (i / 14) * Math.PI * 2;
       fx.particles.push({
-        x: sx(x, y), y: sy(x, y) - 6, vx: Math.cos(a) * 60, vy: Math.sin(a) * 40 - 30,
+        x: sx(x, y), y: sy(x, y) - liftAt(x, y) - 6, vx: Math.cos(a) * 60, vy: Math.sin(a) * 40 - 30,
         life: 1, fade: 1.6, grav: 220, color: i % 3 ? C.moss2 : C.elec2, size: i % 3 ? 3 : 2,
       });
     }
@@ -594,7 +795,7 @@ export function createRenderer(canvas) {
       const n = p.overheated ? 3 : 1;
       for (let i = 0; i < n; i++) {
         if (Math.random() > dt * 30) continue;
-        const [X, Y] = P3(rig.pos.x, rig.pos.y, rig.opts.bodyHeight);
+        const [X, Y] = P3(rig.pos.x, rig.pos.y, rig.opts.bodyHeight + lvAt(rig.pos.x, rig.pos.y) * LEVEL_Z);
         const steam = Math.random() < 0.6;
         fx.particles.push(steam
           ? { x: X + (Math.random() - 0.5) * 12, y: Y - 4, vx: (Math.random() - 0.5) * 10, vy: -25, life: 1, fade: 1.2, grav: -10, color: C.metal4, size: 3 }
@@ -622,7 +823,7 @@ export function createRenderer(canvas) {
 
   // ---- frame ---------------------------------------------------------------
   function draw(state, view, rigs, t, look, dt = 0) {
-    const { map } = state;
+    map = state.map;
     const p = state.player;
     scale = 1 / look.pixel; // art pixels per world pixel: fixed, zoom-independent
     onePx = look.pixel;
@@ -668,39 +869,72 @@ export function createRenderer(canvas) {
     ctx.lineTo(sx(0, map.h), sy(0, map.h) + 22);
     ctx.closePath(); ctx.fill();
 
+    // Ground level: flat level-0 floor first, with its blood and vents.
+    const ground = (tx, ty) => { const i = ty * map.w + tx; return !map.solid[i] && !map.kind[i] && map.level[i] === 0; };
     for (let ty = 0; ty < map.h; ty++) {
-      for (let tx = 0; tx < map.w; tx++) if (!isSolid(map, tx, ty)) drawFloor(tx, ty, t);
+      for (let tx = 0; tx < map.w; tx++) if (ground(tx, ty)) drawFloor(tx, ty, t);
     }
-    for (const v of state.vents) drawVent(v, t, dt);
-    // Blood and husks, baked into their own layer as they happen.
-    if (decal.canvas && decal.map === map) {
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(decal.canvas, decal.x0, decal.y0, decal.w, decal.h);
+    if (decal.map === map) {
+      for (const key of decal.tiles.keys()) {
+        const tx = key % map.w, ty = Math.floor(key / map.w);
+        if (ground(tx, ty)) drawTileBlood(tx, ty, 0, false);
+      }
     }
+    for (const v of state.vents) if (ground(Math.floor(v.x), Math.floor(v.y))) drawVent(v, t, dt);
 
-    // Dash afterimage on the floor.
+    // Dash afterimage.
     const pr = rigs.player;
     for (const g of fx.trail) {
+      baseZ = lvAt(g.x, g.y) * LEVEL_Z;
       ellipsePath(g.x, g.y, pr.opts.bodyHeight, pr.heading, 0.26, 0.16);
       ctx.globalAlpha = g.life * 0.5; ctx.fillStyle = C.elec0; ctx.fill(); ctx.globalAlpha = 1;
     }
+    baseZ = 0;
 
-    // Painter's order by x + y. Walls use their centre, entities their feet.
+    // Painter's order by x + y. Columns (walls, raised floors, slopes) use
+    // their centre; creatures and batteries their feet.
     const items = [];
+    const colTop = (tx, ty) => {
+      const i = ty * map.w + tx;
+      return map.solid[i] ? map.level[i] + WALL_H / LEVEL_PX : map.level[i] + (map.kind[i] ? 1 : 0);
+    };
     for (let ty = 0; ty < map.h; ty++) {
-      for (let tx = 0; tx < map.w; tx++) if (isSolid(map, tx, ty)) items.push({ d: tx + ty + 1, k: 0, tx, ty });
+      for (let tx = 0; tx < map.w; tx++) if (!ground(tx, ty)) items.push({ d: tx + ty + 1, k: 0, tx, ty, top: colTop(tx, ty) });
     }
-    for (const s of state.shards) if (!s.taken) items.push({ d: s.x + s.y, k: 1, s });
+    for (const v of state.vents) {
+      const tx = Math.floor(v.x), ty = Math.floor(v.y);
+      if (!ground(tx, ty)) items.push({ d: tx + ty + 1, k: 0.5, v });
+    }
+    // Something standing on a column draws after it. With nothing taller just
+    // in front, it also draws after its same-height neighbours, so its legs
+    // aren't cut off by the next tile of the same floor.
+    const standDepth = (x, y) => {
+      const tx = Math.floor(x), ty = Math.floor(y), z = lvAt(x, y);
+      let d = x + y;
+      if (!ground(tx, ty)) d = Math.max(d, tx + ty + 1.001);
+      const taller = [[1, 0], [0, 1], [1, 1]].some(([a, b]) => {
+        const nx = tx + a, ny = ty + b;
+        return nx < map.w && ny < map.h && colTop(nx, ny) > z + 0.2;
+      });
+      return taller ? d : Math.max(d, tx + ty + 1.6);
+    };
+    for (const s of state.shards) if (!s.taken) items.push({ d: standDepth(s.x, s.y), k: 1, s });
     for (const c of state.critters) {
       const rig = rigs.critters.get(c.id);
-      if (rig) items.push({ d: rig.pos.x + rig.pos.y - (c.alive ? 0 : 0.5), k: 3, rig, i: c.id, c });
+      if (rig) items.push({ d: standDepth(rig.pos.x, rig.pos.y) - (c.alive ? 0 : 0.01), k: 3, rig, i: c.id, c });
     }
-    const pd = pr.pos.x + pr.pos.y;
+    const pd = standDepth(pr.pos.x, pr.pos.y);
+    const pz = lvAt(pr.pos.x, pr.pos.y);
     items.push({ d: pd, k: 2 });
     items.sort((a, b) => a.d - b.d || a.k - b.k);
 
     for (const it of items) {
-      if (it.k === 0) drawWall(map, it.tx, it.ty, t, it.d > pd && hidesPlayer(it.tx, it.ty, pr) ? 0.35 : 1);
+      if (it.k === 0) {
+        // Columns taller than the player, in front of it, fade so it stays visible.
+        const fade = it.d > pd && it.top > pz + 0.2 && hidesPlayer(it.tx, it.ty, pr, it.top * LEVEL_PX);
+        if (map.solid[it.ty * map.w + it.tx]) drawWall(it.tx, it.ty, t, fade ? 0.35 : 1);
+        else drawColumn(it.tx, it.ty, t, fade ? 0.35 : 1);
+      } else if (it.k === 0.5) drawVent(it.v, t, dt);
       else if (it.k === 1) drawCell(it.s, t);
       else if (it.k === 3) drawSpider(it.rig, it.c, it.i, t);
       else {
@@ -722,7 +956,9 @@ export function createRenderer(canvas) {
     }
 
     // Outline on top so the player stays visible behind walls.
+    baseZ = pz * LEVEL_Z;
     ellipsePath(pr.pos.x, pr.pos.y, pr.opts.bodyHeight, pr.heading, 0.26, 0.16);
+    baseZ = 0;
     ctx.globalAlpha = 0.5; ctx.strokeStyle = C.metal4; ctx.lineWidth = px(1); ctx.stroke(); ctx.globalAlpha = 1;
 
     for (const q of fx.particles) {
@@ -778,7 +1014,7 @@ export function createRenderer(canvas) {
     resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals,
     ventPuff: (v) => ventPuff(v, 14),
     bigBurst: (x, y) => { burst(x, y); burst(x, y); },
-    screenOf: (x, y) => ({ x: sx(x, y), y: sy(x, y) }),
+    screenOf: (x, y) => ({ x: sx(x, y), y: sy(x, y) - liftAt(x, y) }),
     get size() { return { w, h }; },
   };
 }

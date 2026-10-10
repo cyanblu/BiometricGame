@@ -1,4 +1,4 @@
-# Biometric behaviour spec (v0.5)
+# Biometric behaviour spec (v0.6)
 
 Premise: you control a small mechanical bug in a world of living bugs. The
 bug's vital signs (biometrics) are part of play and show up in how it moves.
@@ -62,6 +62,32 @@ number changes here, change `DEFAULT_PARAMS` in `src/sim.js` and the tests in
    the player keeps moving instead of stopping dead.
 5. Cooldown counts from dash start. A second dash cannot start until 0.55 s
    after the first one started.
+
+### Terrain levels
+
+| Property | Value |
+|---|---|
+| Height of one level (drawn) | 24 world px (a wall is 34) |
+| Surfaces meet within | 0.12 levels |
+| Pickups, hits and kills reach | 0.5 levels up or down |
+
+1. Every tile has a level (`heights` layer of the map: `0`–`9`). Ramps
+   (`>` `<` `v` `^`) and stairs (`E` `W` `S` `N`) rise toward +x, −x, +y, −y.
+   A slope starts at the level of the tile on its low side and rises by one
+   level across the tile. Stairs move exactly like ramps; only the look differs.
+2. Height is continuous on slopes: walking up one changes height smoothly.
+3. Cliffs block both ways: no climbing up, no stepping or dashing off a ledge.
+   Levels only connect through ramps and stairs. A slope's sides are cliffs
+   except where the heights happen to match.
+4. Rule: an entity touching another tile at point *c* is blocked when that
+   tile is a wall, or when the two tiles' surface heights at *c* differ by
+   more than 0.12. Comparing at the contact point (not at the entity's centre)
+   is what lets a 0.3-radius body step off the top of a ramp.
+5. Batteries, spider hits and dash kills only count within 0.5 levels.
+6. Bugs' feet land on the ground under them (they reach down steps), never on
+   ground more than 0.6 levels away from the body.
+7. Tested: every slope's low and high side are open, the arena uses at least
+   three levels, and every battery and vent is reachable from the spawn.
 
 ### Collision
 
@@ -223,8 +249,11 @@ each frame for effects. Simulation logic never reads them.
 
 ## HUD: vitals panel
 
-Bottom left, pixel art in a biomechanical (H. R. Giger-like) style: bone
-vertebrae, ribs and black tubing.
+Bottom left, 168 × 52 art pixels, biomechanical (H. R. Giger-like): a
+toothed halftone backplate, two segmented cords, bone vertebrae and seed pods.
+Painted with gradients and glows, then snapped to the game palette with the
+same ordered dither as the world (outline kept crisp). Shown at 2× (1.5× on
+phones, which is 3 device pixels per art pixel on 2× screens).
 
 1. Health: a spine of 10 vertebrae, each holding a capsule of blood. Lost
    health leaves a dark, cracked capsule. Flashes on a hit.
@@ -262,7 +291,15 @@ onto walls). Splatters and husks stay on the floor for the rest of the run.
 ## Arena
 
 32 × 32 tiles, mostly open: a few pillars and broken wall stubs, 5 vents,
-12 small cells and 3 big red batteries.
+12 small cells and 3 big red batteries. Terrain: a north-east plateau (level 1,
+ramp from the west, stairs from the south) with a grated deck on it (level 2,
+stairs), a south-west plateau (level 1, ramp from the east, stairs from the
+north) and a small middle island (level 1, ramp from the south).
+
+Raised floors are riveted metal deck plates (level 2: grating) with a bright
+lip; cliff faces are dark concrete with drains, rust and moss; ramps have
+grip grooves and worn hazard paint at the foot; stairs show treads and risers.
+Blood stays on the floor it was spilled on.
 
 ## Not decided yet
 
