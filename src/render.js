@@ -3,7 +3,7 @@
 // (one art pixel = `look.pixel` world pixels, whatever the zoom), lit, snapped
 // to the palette in src/pixel.js, then scaled up by a whole number without
 // smoothing. Zoom only changes that whole-number scale, never the art.
-import { TILE_W, TILE_H, isSolid, groundLevel, tileLevelAt } from './sim.js';
+import { TILE_W, TILE_H, isSolid, groundLevel, tileLevelAt, rainLevel } from './sim.js';
 import { hipOf, legIK } from './bug.js';
 import { COLORS, buildLut, quantize } from './pixel.js';
 
@@ -30,7 +30,8 @@ export function createRenderer(canvas) {
   let ctx = low.getContext('2d', { willReadFrequently: true }); // swapped while drawing menu previews
   const lctx = light.getContext('2d');
   const table = buildLut();
-  const fx = { particles: [], trail: [], drops: [] };
+  const fx = { particles: [], trail: [], drops: [], rings: [], splashes: [], sheets: [] };
+  const grade = { r: 74, g: 90, b: 102 }; // current colour grade, eased toward the biome's
   let lights = [];
   let w = 0, h = 0, dpr = 1;
   let scale = 1; // low-res pixels per world pixel this frame
@@ -105,7 +106,19 @@ export function createRenderer(canvas) {
   // Biome of a tile: 0 yard, 1 garden, 2 foundry, 3 drains, 4 hive (sim BIOME_KEYS).
   const biomeAt = (tx, ty) => (map && map.biome ? map.biome[ty * map.w + tx] : 0);
 
+  // Rain World-like depth: low floors sink into a biome-tinted fog.
+  const FOG = () => [C.puddle0, C.moss0, C.grime, C.puddle0, C.blood0];
+  function fogTile(tx, ty, level) {
+    const a = level <= 0 ? 0.2 : level < 2 ? 0.08 : 0;
+    if (!a) return;
+    diamond(tx, ty, 0);
+    ctx.globalAlpha *= a; ctx.fillStyle = FOG()[biomeAt(tx, ty)]; ctx.fill(); ctx.globalAlpha /= a;
+  }
   function drawDeck(tx, ty, level) {
+    drawDeckTile(tx, ty, level);
+    fogTile(tx, ty, level);
+  }
+  function drawDeckTile(tx, ty, level) {
     const b = biomeAt(tx, ty);
     if (b) { BIOME_DECK[b](tx, ty, level); return; }
     const n = hash(tx, ty, 7);
@@ -138,6 +151,11 @@ export function createRenderer(canvas) {
   }
 
   function drawFloor(tx, ty, t) {
+    drawFloorTile(tx, ty, t);
+    fogTile(tx, ty, 0);
+    if (biomeAt(tx, ty) === 1) gardenOrnaments(tx, ty);
+  }
+  function drawFloorTile(tx, ty, t) {
     const b = biomeAt(tx, ty);
     if (b) { BIOME_FLOOR[b](tx, ty, t); return; }
     const n = hash(tx, ty), v = hash(tx, ty, 1);
@@ -193,7 +211,36 @@ export function createRenderer(canvas) {
   };
   const glowPulse = (t, seed, speed = 1.5) => 0.5 + 0.5 * Math.sin(t * speed + seed * 7);
 
-  // Overgrown garden: dark soil, moss, grass tufts, glowing mushrooms.
+  // A curl: a spiral stroke, the building block of the ornamental flora.
+  function curl(X, Y, r, dir, turns, color, width = 1) {
+    ctx.strokeStyle = color; ctx.lineWidth = px(width); ctx.beginPath();
+    const n = 14;
+    for (let i = 0; i <= n; i++) {
+      const f = i / n, a = dir * f * turns * Math.PI * 2, rr = r * (1 - f * 0.85);
+      const x = X + Math.cos(a) * rr * dir, y = Y + Math.sin(a) * rr;
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+  }
+  // Ornament plant: a stem rising from the floor that rolls into curls,
+  // drawn like a spray-painted flourish rather than a real plant.
+  function ornament(x, y, seed, lift = 0, scaleK = 1) {
+    const X = sx(x, y), Y = sy(x, y) - lift;
+    const h = (12 + hash(seed, 1, 3) * 10) * scaleK, lean = (hash(seed, 2, 3) - 0.5) * 10 * scaleK;
+    ctx.strokeStyle = C.moss2; ctx.lineWidth = px(1.5);
+    ctx.beginPath(); ctx.moveTo(X, Y); ctx.quadraticCurveTo(X - lean, Y - h * 0.6, X + lean * 0.4, Y - h); ctx.stroke();
+    curl(X + lean * 0.4 + 3 * scaleK, Y - h, 4 * scaleK, 1, 1.1, C.moss3, 1.5);
+    const sides = 1 + Math.floor(hash(seed, 3, 3) * 3);
+    for (let i = 0; i < sides; i++) {
+      const f = 0.35 + i * 0.2, d = i % 2 ? 1 : -1;
+      const bx = X - lean * f * 0.8, by = Y - h * f;
+      ctx.strokeStyle = C.moss2; ctx.lineWidth = px(1);
+      ctx.beginPath(); ctx.moveTo(bx, by); ctx.quadraticCurveTo(bx + d * 4 * scaleK, by - 4 * scaleK, bx + d * 6 * scaleK, by - 2 * scaleK); ctx.stroke();
+      curl(bx + d * 7 * scaleK, by - 2 * scaleK, 2.5 * scaleK, d, 0.9, i % 2 ? C.moss3 : C.cell0);
+    }
+  }
+
+  // Overgrown garden: dark soil, moss, ornamental curl-plants, glowing fungus.
   function floorGarden(tx, ty, t) {
     const n = hash(tx, ty), v = hash(tx, ty, 1);
     diamond(tx, ty, 0);
@@ -216,6 +263,9 @@ export function createRenderer(canvas) {
       floorBlob(tx + 0.5, ty + 0.5, 0.28, C.void2); // mud
       floorBlob(tx + 0.45, ty + 0.45, 0.12, C.puddle0);
     }
+  }
+  function gardenOrnaments(tx, ty) {
+    if (hash(tx, ty, 77) < 0.09) ornament(tx + 0.3 + hash(tx, ty, 78) * 0.4, ty + 0.3 + hash(tx, ty, 79) * 0.4, tx * 131 + ty);
   }
   function deckGarden(tx, ty) {
     diamond(tx, ty, 0); ctx.fillStyle = C.grime; ctx.fill();
@@ -606,6 +656,61 @@ export function createRenderer(canvas) {
     }
   }
 
+  // Made-up script: each glyph is a few strokes on a 3 x 4 grid.
+  const GLYPH_STROKES = [[0, 0, 2, 0], [0, 0, 0, 3], [2, 0, 2, 3], [0, 3, 2, 3], [0, 1, 2, 1], [1, 0, 1, 3], [0, 0, 2, 3], [2, 0, 0, 2], [0, 2, 2, 2], [1, 1, 2, 3]];
+  const NEON = () => [C.neon1, C.elec1, C.lamp1];
+  function neonSign(face, tx, ty, t) {
+    const k = face.side === 'y' ? 0 : 50;
+    const color = NEON()[Math.floor(hash(tx, ty, 402 + k) * 3)];
+    const n = 2 + Math.floor(hash(tx, ty, 403 + k) * 3);
+    const u0 = 0.12, u1 = 0.88, v0 = 0.42, v1 = 0.82;
+    faceQuad(face, u0, u1, v0, v1);
+    ctx.fillStyle = C.void0; ctx.fill();
+    const broken = hash(tx, ty, 404 + k) < 0.35; // some tubes buzz on and off
+    const cw = (u1 - u0 - 0.08) / n;
+    ctx.strokeStyle = color; ctx.lineWidth = px(1.2); ctx.lineCap = 'round';
+    let lit = 0;
+    for (let g = 0; g < n; g++) {
+      if (broken && hash(Math.floor(t * 7), tx + g, ty) < 0.3) continue;
+      lit++;
+      ctx.beginPath();
+      const strokes = 2 + Math.floor(hash(tx + g, ty, 405 + k) * 3);
+      for (let i = 0; i < strokes; i++) {
+        const [a, b, c, d] = GLYPH_STROKES[Math.floor(hash(tx * 7 + g, ty * 3 + i, 406 + k) * GLYPH_STROKES.length)];
+        const U = (q) => u0 + 0.04 + g * cw + (q / 2) * cw * 0.7, V = (q) => v1 - 0.06 - (q / 3) * (v1 - v0 - 0.12);
+        ctx.moveTo(...facePoint(face, U(a), V(b))); ctx.lineTo(...facePoint(face, U(c), V(d)));
+      }
+      ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+    if (lit) {
+      const [lx, ly] = facePoint(face, 0.5, (v0 + v1) / 2);
+      lights.push({ x: lx, y: ly + 6, r: 50 + lit * 8, color, glow: 0.22 });
+    }
+  }
+  // Spray-paint: a looping tag with drips.
+  function graffiti(face, tx, ty) {
+    const k = face.side === 'y' ? 0 : 50;
+    const colors = [C.hull1, C.elec0, C.neon0, C.moss3, C.lamp0];
+    const color = colors[Math.floor(hash(tx, ty, 420 + k) * colors.length)];
+    ctx.strokeStyle = color; ctx.lineWidth = px(1.5); ctx.globalAlpha *= 0.8;
+    ctx.beginPath();
+    let u = 0.15 + hash(tx, ty, 421 + k) * 0.1, v = 0.3 + hash(tx, ty, 422 + k) * 0.25;
+    ctx.moveTo(...facePoint(face, u, v));
+    for (let i = 0; i < 4; i++) {
+      const nu = u + 0.15 + hash(tx, ty, 423 + i + k) * 0.08, nv = 0.25 + hash(tx, ty, 430 + i + k) * 0.35;
+      ctx.quadraticCurveTo(...facePoint(face, (u + nu) / 2, nv + 0.25), ...facePoint(face, nu, nv));
+      u = nu;
+    }
+    ctx.stroke();
+    ctx.lineWidth = px(1);
+    for (let i = 0; i < 3; i++) {
+      const du = 0.2 + hash(tx, ty, 440 + i + k) * 0.6, dv = 0.3 + hash(tx, ty, 441 + i + k) * 0.2;
+      ctx.beginPath(); ctx.moveTo(...facePoint(face, du, dv)); ctx.lineTo(...facePoint(face, du, dv - 0.12 - hash(tx, ty, 442 + i) * 0.15)); ctx.stroke();
+    }
+    ctx.globalAlpha /= 0.8;
+  }
+
   function wallTop(tx, ty) { return map.level[ty * map.w + tx] * LEVEL_PX + WALL_H; }
 
   function drawWall(tx, ty, t, alpha = 1) {
@@ -616,6 +721,10 @@ export function createRenderer(canvas) {
       faceQuad(f, 0, 1, 0, 1);
       ctx.fillStyle = f.side === 'y' ? wc[0] : wc[1]; ctx.fill();
       if (b) decorateWallBiome(b, f, t); else decorateFace(f, t);
+      const k = f.side === 'y' ? 0 : 50;
+      const signs = [0.07, 0.02, 0.07, 0.08, 0.02][b], tags = [0.1, 0.04, 0.06, 0.12, 0][b];
+      if (hash(tx, ty, 400 + k) < signs) neonSign(f, tx, ty, t);
+      else if (hash(tx, ty, 410 + k) < tags) graffiti(f, tx, ty);
     }
     const WALL_H = top; // lift of the top face (shadows the module constant)
     diamond(tx, ty, WALL_H);
@@ -1090,7 +1199,7 @@ export function createRenderer(canvas) {
     const { x, y } = rig.pos;
     const dead = !c.alive;
     const z = (dead ? 0.03 : o.bodyHeight * k) + rig.bodyDip;
-    const red = dead ? C.blood0 : C.hot0, dark = C.void1;
+    const red = dead ? C.blood0 : c.elder ? C.blood1 : C.hot0, dark = C.void1;
     const B = (along, side, zz) => P3(x + (cs * along - sn * side) * k, y + (sn * along + cs * side) * k, zz);
     const seg = (along, side, zz, a, b, color) => {
       ellipsePath(x + (cs * along - sn * side) * k, y + (sn * along + cs * side) * k, zz, hd, a * k, b * k);
@@ -1117,7 +1226,11 @@ export function createRenderer(canvas) {
     seg(-0.04, 0, z - 0.03 * k, 0.26, 0.14, dark);
     seg(-0.04, 0, z, 0.25, 0.13, red);
     if (!dead) {
-      line([[0.1, 0.05, z + 0.012], [-0.16, 0.06, z + 0.012]], C.hot1, 1.5); // glossy highlight
+      line([[0.1, 0.05, z + 0.012], [-0.16, 0.06, z + 0.012]], c.elder ? C.blood2 : C.hot1, 1.5); // glossy highlight
+      if (c.elder) { // an elder: scarred, with a pale chevron and old wounds
+        line([[0.02, -0.11, z + 0.014], [-0.1, 0, z + 0.014], [0.02, 0.11, z + 0.014]], C.hull2, 1.2);
+        line([[-0.14, -0.08, z + 0.014], [-0.18, -0.02, z + 0.014]], C.void0, 1);
+      }
       // Warning colours should read in the dark: a faint red glow of their own.
       const [gx, gy] = B(0, 0, z);
       lights.push({ x: gx, y: gy, r: 26, color: C.hot0, glow: 0.12 });
@@ -1426,6 +1539,142 @@ export function createRenderer(canvas) {
     lights.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, r: 40 + charge * 30, color: C.elec1, glow: 0.25 + charge * 0.3 });
   }
 
+  // ---- shelters ----------------------------------------------------------------
+  // A round hatch sunk into the floor with an iris of blades. Open (warm light
+  // inside, a beacon above) when the bug could sleep in it; the iris closes
+  // while it curls up.
+  function drawShelter(h, t, state) {
+    const p = state.player;
+    const X = sx(h.x, h.y), Y = sy(h.x, h.y) - h.z * LEVEL_PX;
+    const ready = p.food >= 4 || (state.cycle.on && state.cycle.phase !== 'clear');
+    const here = Math.hypot(p.x - h.x, p.y - h.y) < 0.5;
+    const close = here ? Math.min(1, p.sleep) : 0;
+    const R = HW * 0.42, r = R * (0.75 - 0.6 * close);
+    // Rim.
+    ctx.fillStyle = C.metal1; ctx.beginPath(); ctx.ellipse(X, Y, R + 4, (R + 4) / 2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = C.metal3; ctx.lineWidth = px(1); ctx.stroke();
+    for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2; ctx.fillStyle = C.metal4; ctx.fillRect(X + Math.cos(a) * (R + 2) - onePx / 2, Y + Math.sin(a) * (R + 2) / 2 - onePx / 2, onePx, onePx); }
+    // Blades.
+    ctx.fillStyle = C.metal2; ctx.beginPath(); ctx.ellipse(X, Y, R, R / 2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = ready ? C.lamp0 : C.void0; ctx.beginPath(); ctx.ellipse(X, Y, r, r / 2, 0, 0, Math.PI * 2); ctx.fill();
+    if (ready) { ctx.fillStyle = C.lamp1; ctx.beginPath(); ctx.ellipse(X, Y, r * 0.5, r * 0.25, 0, 0, Math.PI * 2); ctx.fill(); }
+    ctx.strokeStyle = C.metal0; ctx.lineWidth = px(1);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + close * 1.2;
+      ctx.beginPath(); ctx.moveTo(X + Math.cos(a) * r, Y + Math.sin(a) * r / 2); ctx.lineTo(X + Math.cos(a + 0.9) * R, Y + Math.sin(a + 0.9) * R / 2); ctx.stroke();
+    }
+    // Stripes on the rim so it reads from afar.
+    ctx.strokeStyle = C.lamp0; ctx.lineWidth = px(2);
+    for (const a0 of [0.3, 2.4, 4.4]) { ctx.beginPath(); ctx.ellipse(X, Y, R + 2, (R + 2) / 2, 0, a0, a0 + 0.5); ctx.stroke(); }
+    if (ready) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 2.2);
+      lights.push({ x: X, y: Y - 4, r: 50 + pulse * 14, color: C.lamp1, glow: 0.25 + pulse * 0.15 });
+      // A faint beacon so it can be found in the rain.
+      ctx.globalAlpha = 0.18 + pulse * 0.1; ctx.fillStyle = C.lamp1;
+      ctx.fillRect(X - 1, Y - 120, 2, 116); ctx.globalAlpha = 1;
+    } else lights.push({ x: X, y: Y, r: 22, color: C.lamp0, glow: 0.08 });
+  }
+
+  // ---- gnat nests and gnats ---------------------------------------------------
+  // A nest: a big ornamental curl-plant with a hanging pod the gnats live in.
+  function drawNest(n, t) {
+    const lift = liftAt(n.x, n.y), X = sx(n.x, n.y), Y = sy(n.x, n.y) - lift;
+    const seed = Math.floor(n.x * 31 + n.y * 17);
+    ornament(n.x - 0.15, n.y + 0.1, seed, lift, 1.4);
+    ornament(n.x + 0.15, n.y - 0.1, seed + 5, lift, 1.1);
+    const sway = Math.sin(t * 1.3 + seed) * 2;
+    ctx.strokeStyle = C.moss2; ctx.lineWidth = px(1.5);
+    ctx.beginPath(); ctx.moveTo(X, Y); ctx.quadraticCurveTo(X + 6, Y - 26, X + sway, Y - 34); ctx.stroke();
+    ctx.fillStyle = C.beetleA0; ctx.beginPath(); ctx.ellipse(X + sway, Y - 28, 5, 7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.beetleA1; ctx.beginPath(); ctx.ellipse(X + sway - 1.5, Y - 30, 2, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.void0; ctx.fillRect(X + sway - 1, Y - 24, 2, 2);
+    curl(X + sway, Y - 37, 4, -1, 1.2, C.moss3, 1.5);
+    lights.push({ x: X + sway, y: Y - 26, r: 22, color: C.cell1, glow: 0.1 });
+  }
+  function drawGnat(g, t, alpha) {
+    const x = g.px + (g.x - g.px) * alpha, y = g.py + (g.y - g.py) * alpha, h = (g.ph ?? g.h) + (g.h - (g.ph ?? g.h)) * alpha;
+    const bob = Math.sin(t * 9 + g.id) * 2;
+    const X = sx(x, y), Y = sy(x, y) - h * LEVEL_PX + bob;
+    const flap = Math.floor(t * 30 + g.id) % 2;
+    ctx.fillStyle = C.hull2;
+    if (flap) { ctx.fillRect(X - 5, Y - 3, 4, 2); ctx.fillRect(X + 1, Y - 3, 4, 2); }
+    else { ctx.fillRect(X - 5, Y, 4, 2); ctx.fillRect(X + 1, Y, 4, 2); }
+    ctx.fillStyle = C.limb; ctx.fillRect(X - 1.5, Y - 2, 3, 4);
+    // A glowing tail, brighter on the beat, so prey can be spotted in the dark.
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3 + g.id * 1.7);
+    ctx.fillStyle = pulse > 0.5 ? C.cell2 : C.cell1; ctx.fillRect(X - 1, Y + 2, 2, 2);
+    lights.push({ x: X, y: Y + 2, r: 14 + pulse * 6, color: C.cell1, glow: 0.15 + pulse * 0.15 });
+  }
+
+  // ---- rusted poles with cables between them (decor only) ----------------------
+  const ruin = { map: null, poles: [], cables: [] };
+  function buildRuins(state) {
+    ruin.map = map; ruin.poles = []; ruin.cables = [];
+    const taken = new Set();
+    const mark = (o) => taken.add(Math.floor(o.y) * map.w + Math.floor(o.x));
+    [...state.shards, ...state.vents, ...state.cocoons, ...(state.shelters || []), ...(state.nests || [])].forEach(mark);
+    mark(map.spawn);
+    const density = [0.02, 0.006, 0.03, 0.022, 0.006];
+    for (let ty = 1; ty < map.h - 1; ty++) {
+      for (let tx = 1; tx < map.w - 1; tx++) {
+        const i = ty * map.w + tx;
+        if (map.solid[i] || map.kind[i] || taken.has(i) || hash(tx, ty, 301) >= density[biomeAt(tx, ty)]) continue;
+        ruin.poles.push({ tx, ty, x: tx + 0.25 + hash(tx, ty, 302) * 0.5, y: ty + 0.25 + hash(tx, ty, 303) * 0.5, h: 70 + hash(tx, ty, 304) * 40, lamp: hash(tx, ty, 305) < 0.3 });
+      }
+    }
+    for (const a of ruin.poles) {
+      let best = null, bd = 7;
+      for (const b of ruin.poles) {
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (b !== a && d > 1.5 && d < bd) { best = b; bd = d; }
+      }
+      if (best && !ruin.cables.some((c) => c.a === best && c.b === a)) ruin.cables.push({ a, b: best, sag: 14 + hash(a.tx, a.ty, 306) * 20 });
+    }
+  }
+  const poleTop = (q) => [sx(q.x, q.y), sy(q.x, q.y) - liftAt(q.x, q.y) - q.h];
+  function drawPole(q, t) {
+    const X = sx(q.x, q.y), Y = sy(q.x, q.y) - liftAt(q.x, q.y), top = Y - q.h;
+    ctx.fillStyle = C.rust0; ctx.fillRect(X - 1.5, top, 3, q.h);
+    ctx.fillStyle = C.rust1; ctx.fillRect(X - 1.5, top, 1, q.h);
+    ctx.fillStyle = C.void1; ctx.fillRect(X - 3, Y - 3, 6, 3); // foot plate
+    ctx.fillStyle = C.rust0; ctx.fillRect(X - 9, top + 6, 18, 2); // crossbar
+    ctx.fillStyle = C.rust2; ctx.fillRect(X - 9, top + 6, 18, 1);
+    for (const d of [-8, 7]) { ctx.fillStyle = C.metal3; ctx.fillRect(X + d, top + 3, 1, 3); } // insulators
+    if (q.lamp) {
+      const on = hash(Math.floor(t * 5), q.tx, q.ty) > 0.15;
+      ctx.fillStyle = on ? C.lamp1 : C.lamp0; ctx.fillRect(X + 2, top + 10, 3, 3);
+      if (on) lights.push({ x: X + 3, y: top + 11, r: 70, color: C.lamp1, glow: 0.2 });
+    }
+  }
+  function drawCables(onScreenXY) {
+    ctx.strokeStyle = C.limb; ctx.lineWidth = px(1);
+    for (const c of ruin.cables) {
+      const [ax, ay] = poleTop(c.a), [bx, by] = poleTop(c.b);
+      if (!onScreenXY(ax, ay) && !onScreenXY(bx, by)) continue;
+      const mx = (ax + bx) / 2, my = (ay + by) / 2 + c.sag;
+      for (const d of [-8, 7]) {
+        ctx.beginPath(); ctx.moveTo(ax + d, ay + 3); ctx.quadraticCurveTo(mx + d, my + 3, bx + d, by + 3); ctx.stroke();
+      }
+    }
+  }
+
+  // Noise ripples and other short floor rings.
+  function noiseRing(x, y, r) { fx.rings.push({ x, y, z: lvAt(x, y), r: Math.min(r, 4), life: 1 }); }
+  function drawRings(dt) {
+    for (const q of fx.rings) {
+      q.life -= dt * 1.4;
+      const k = 1 - q.life, R = q.r * k;
+      ctx.globalAlpha = Math.max(0, q.life) * 0.35; ctx.strokeStyle = C.metal4; ctx.lineWidth = px(1);
+      ctx.beginPath(); ctx.ellipse(sx(q.x, q.y), sy(q.x, q.y) - q.z * LEVEL_PX, R * HW * Math.SQRT2 * 0.7, R * HH * Math.SQRT2 * 0.7, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    fx.rings = fx.rings.filter((q) => q.life > 0);
+  }
+  function eatFx(x, y, z) {
+    const X = sx(x, y), Y = sy(x, y) - (z ?? lvAt(x, y)) * LEVEL_PX;
+    for (let i = 0; i < 6; i++) fx.particles.push({ x: X, y: Y, vx: (Math.random() - 0.5) * 60, vy: -20 - Math.random() * 30, life: 1, fade: 2.5, grav: 80, color: i % 2 ? C.cell1 : C.metal4, size: 2 });
+  }
+
   // ---- vents ---------------------------------------------------------------
   function drawVent(v, t, dt) {
     const tx = Math.floor(v.x), ty = Math.floor(v.y);
@@ -1606,21 +1855,50 @@ export function createRenderer(canvas) {
     }
   }
 
-  function rain(lw, lh, amount, dt) {
-    const want = Math.round(amount * (lw * lh) / 900);
+  // Rain follows the cycle: drizzle when clear, heavier in the warning, and
+  // in the downpour dense slanted streaks, sheets of water and splashes.
+  function rain(lw, lh, amount, dt, storm = 0) {
+    const want = Math.round(amount * (0.35 + storm * 3) * (lw * lh) / 900);
+    const slant = 0.25 + storm * 0.35, speed = 1 + storm * 1.6, len = 1 + storm * 3;
     while (fx.drops.length < want) {
-      fx.drops.push({ x: Math.random() * (lw + 40), y: Math.random() * lh, v: 160 + Math.random() * 120, len: 2 + Math.random() * 3 });
+      fx.drops.push({ x: Math.random() * (lw + 80), y: Math.random() * lh, v: 160 + Math.random() * 120, len: 2 + Math.random() * 3 });
     }
     fx.drops.length = Math.min(fx.drops.length, want);
     ctx.strokeStyle = C.metal3; ctx.lineWidth = 1;
     ctx.beginPath();
     for (const d of fx.drops) {
-      d.y += d.v * dt; d.x -= d.v * 0.25 * dt;
-      if (d.y > lh || d.x < -4) { d.y = -5; d.x = Math.random() * (lw + 40); }
+      d.y += d.v * speed * dt; d.x -= d.v * speed * slant * dt;
+      if (d.y > lh || d.x < -8) {
+        if (storm > 0.3 && Math.random() < storm) fx.splashes.push({ x: d.x, y: Math.min(d.y, lh - 2), life: 1 });
+        d.y = -5; d.x = Math.random() * (lw + 80);
+      }
       ctx.moveTo(Math.round(d.x), Math.round(d.y));
-      ctx.lineTo(Math.round(d.x + d.len * 0.25), Math.round(d.y - d.len));
+      ctx.lineTo(Math.round(d.x + d.len * len * slant), Math.round(d.y - d.len * len));
     }
     ctx.stroke();
+    if (storm > 0.3) {
+      // Splashes across the ground, not only where streaks end.
+      for (let i = 0; i < storm * 6; i++) fx.splashes.push({ x: Math.random() * lw, y: Math.random() * lh, life: 1 });
+      ctx.fillStyle = C.metal4;
+      for (const q of fx.splashes) {
+        q.life -= dt * 6;
+        ctx.globalAlpha = Math.max(0, q.life) * 0.7;
+        ctx.fillRect(Math.round(q.x) - 1, Math.round(q.y), 1, 1); ctx.fillRect(Math.round(q.x) + 1, Math.round(q.y), 1, 1);
+        ctx.fillRect(Math.round(q.x), Math.round(q.y) - 1, 1, 1);
+      }
+      ctx.globalAlpha = 1;
+      fx.splashes = fx.splashes.filter((q) => q.life > 0);
+    } else fx.splashes.length = 0;
+    if (storm >= 0.99) {
+      // Sheets of water sweeping across.
+      while (fx.sheets.length < 4) fx.sheets.push({ x: Math.random() * lw, w: 10 + Math.random() * 30, v: 20 + Math.random() * 40 });
+      ctx.fillStyle = C.metal3;
+      for (const q of fx.sheets) {
+        q.x -= q.v * dt; if (q.x < -q.w) { q.x = lw + Math.random() * 40; q.w = 10 + Math.random() * 30; }
+        ctx.globalAlpha = 0.07; ctx.fillRect(Math.round(q.x), 0, Math.round(q.w), lh);
+      }
+      ctx.globalAlpha = 1;
+    } else fx.sheets.length = 0;
   }
 
   // ---- frame ---------------------------------------------------------------
@@ -1709,6 +1987,7 @@ export function createRenderer(canvas) {
       }
     }
     for (const v of state.vents) if (ground(Math.floor(v.x), Math.floor(v.y))) drawVent(v, t, dt);
+    for (const hs of state.shelters || []) if (ground(Math.floor(hs.x), Math.floor(hs.y)) && onScreen(Math.floor(hs.x), Math.floor(hs.y))) drawShelter(hs, t, state);
     ctx.fillStyle = SHADOW;
     for (const sh of shadows) if (sh.gz < 0.05 && ground(Math.floor(sh.x), Math.floor(sh.y))) { sh.draw(); }
 
@@ -1739,6 +2018,10 @@ export function createRenderer(canvas) {
       const tx = Math.floor(v.x), ty = Math.floor(v.y);
       if (!ground(tx, ty)) items.push({ d: tx + ty + 1, k: 0.5, v });
     }
+    for (const hs of state.shelters || []) {
+      const tx = Math.floor(hs.x), ty = Math.floor(hs.y);
+      if (!ground(tx, ty)) items.push({ d: tx + ty + 1, k: 0.6, shelter: hs });
+    }
     // Something standing on a column draws after it. With nothing taller just
     // in front, it also draws after its same-height neighbours, so its legs
     // aren't cut off by the next tile of the same floor.
@@ -1753,6 +2036,10 @@ export function createRenderer(canvas) {
       return taller ? d : Math.max(d, tx + ty + 1.6);
     };
     for (const s of state.shards) if (!s.taken) items.push({ d: standDepth(s.x, s.y), k: 1, s });
+    if (ruin.map !== map) buildRuins(state);
+    for (const q of ruin.poles) if (onScreen(q.tx, q.ty, q.h)) items.push({ d: standDepth(q.x, q.y), k: 1.1, pole: q });
+    for (const n of state.nests || []) if (onScreen(Math.floor(n.x), Math.floor(n.y), 60)) items.push({ d: standDepth(n.x, n.y), k: 1.05, nest: n });
+    for (const g of state.gnats || []) if (onScreen(Math.floor(g.x), Math.floor(g.y), 40)) items.push({ d: standDepth(g.x, g.y) + 0.2, k: 5, gnat: g });
     for (const c of state.critters) {
       const rig = rigs.critters.get(c.id);
       if (rig) items.push({ d: standDepth(rig.pos.x, rig.pos.y) - (c.alive ? 0 : 0.01), k: 3, rig, i: c.id, c });
@@ -1774,6 +2061,10 @@ export function createRenderer(canvas) {
         if (map.solid[it.ty * map.w + it.tx]) drawWall(it.tx, it.ty, t, fade ? 0.35 : 1);
         else drawColumn(it.tx, it.ty, t, fade ? 0.35 : 1);
       } else if (it.k === 0.5) drawVent(it.v, t, dt);
+      else if (it.k === 0.6) drawShelter(it.shelter, t, state);
+      else if (it.k === 1.1) drawPole(it.pole, t);
+      else if (it.k === 1.05) drawNest(it.nest, t);
+      else if (it.k === 5) drawGnat(it.gnat, t, view.alpha ?? 1);
       else if (it.k === 1) drawCell(it.s, t);
       else if (it.k === 1.5) drawBall(it.b, rigs.ballRadius || 0.32, it.bz);
       else if (it.k === 1.2) drawCocoon(it.cocoon, t, state);
@@ -1808,6 +2099,8 @@ export function createRenderer(canvas) {
     }
 
     drawSplats(dt);
+    drawRings(dt);
+    drawCables((X, Y) => X > camX - halfW && X < camX + halfW && Y > camY - halfH - 40 && Y < camY + halfH + 40);
     for (const [id, tt] of cocoonHits) cocoonHits.set(id, tt + dt);
 
     for (const q of fx.particles) {
@@ -1820,14 +2113,29 @@ export function createRenderer(canvas) {
 
     // Rain falls in screen space, before lighting, so it shows near lights.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    if (look.rain > 0) rain(lw, lh, look.rain, Math.min(dt, 0.05));
+    const storm = rainLevel(state);
+    if (look.rain > 0) rain(lw, lh, look.rain, Math.min(dt, 0.05), storm);
+
+    // Colour grade: a light biome tint over everything, eased as you walk, so
+    // each region keeps a few flat colours that carry light and distance.
+    {
+      const pb = biomeAt(Math.max(0, Math.min(map.w - 1, Math.floor(p.x))), Math.max(0, Math.min(map.h - 1, Math.floor(p.y))));
+      const want = [[74, 90, 102], [93, 110, 58], [138, 90, 42], [47, 90, 102], [110, 42, 48]][pb];
+      const e = Math.min(1, dt * 1.5);
+      grade.r += (want[0] - grade.r) * e; grade.g += (want[1] - grade.g) * e; grade.b += (want[2] - grade.b) * e;
+      ctx.globalCompositeOperation = 'soft-light';
+      ctx.fillStyle = `rgba(${grade.r | 0},${grade.g | 0},${grade.b | 0},${0.35 + storm * 0.2})`;
+      ctx.fillRect(0, 0, lw, lh);
+      ctx.globalCompositeOperation = 'source-over';
+    }
 
     // Lighting: darken everything, then cut holes where lights are and add a glow.
-    if (look.darkness > 0) {
+    const dark = Math.min(0.9, look.darkness + storm * 0.22);
+    if (dark > 0) {
       lctx.setTransform(1, 0, 0, 1, 0, 0);
       lctx.globalCompositeOperation = 'source-over';
       lctx.clearRect(0, 0, lw, lh);
-      lctx.fillStyle = `rgba(4,6,8,${look.darkness})`;
+      lctx.fillStyle = `rgba(4,6,8,${dark})`;
       lctx.fillRect(0, 0, lw, lh);
       lctx.globalCompositeOperation = 'destination-out';
       for (const L of lights) {
@@ -1848,6 +2156,23 @@ export function createRenderer(canvas) {
     }
     ctx.globalCompositeOperation = 'source-over';
 
+    // The downpour stays visible over the darkness: a second, brighter veil.
+    if (storm > 0.05 && look.rain > 0) {
+      ctx.strokeStyle = C.metal4; ctx.lineWidth = 1; ctx.globalAlpha = Math.min(0.6, storm * 0.6);
+      ctx.beginPath();
+      const slant = 0.25 + storm * 0.35, len = 1 + storm * 3;
+      for (let i = 0; i < fx.drops.length; i += 2) {
+        const d = fx.drops[i];
+        ctx.moveTo(Math.round(d.x), Math.round(d.y)); ctx.lineTo(Math.round(d.x + d.len * len * slant), Math.round(d.y - d.len * len));
+      }
+      ctx.stroke();
+      if (storm >= 0.99) {
+        ctx.fillStyle = C.metal3;
+        for (const q of fx.sheets) { ctx.globalAlpha = 0.1; ctx.fillRect(Math.round(q.x), 0, Math.round(q.w), lh); }
+      }
+      ctx.globalAlpha = 1;
+    }
+
     if (look.palette) {
       const img = ctx.getImageData(0, 0, lw, lh);
       quantize(img.data, lw, lh, table, look.dither);
@@ -1860,7 +2185,7 @@ export function createRenderer(canvas) {
   }
 
   return {
-    resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals,
+    resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals, noiseRing, eatFx,
     dust, cocoonBurst, muzzle, webSplat, webTorn, cocoonHit,
     ventPuff: (v) => ventPuff(v, 14),
     renderPreview,
@@ -1869,4 +2194,52 @@ export function createRenderer(canvas) {
     screenOf: (x, y, z) => ({ x: sx(x, y), y: sy(x, y) - (z ?? lvAt(x, y)) * LEVEL_PX }),
     get size() { return { w, h }; },
   };
+}
+
+// Minimap: the arena seen from the same isometric angle, one tile per pixel,
+// with shelters, nests, cells and the bug marked.
+export function createMinimap(canvas) {
+  const g = canvas.getContext('2d');
+  const base = document.createElement('canvas');
+  let baseMap = null;
+  const BIOME_RGB = [[60, 72, 80], [58, 74, 44], [92, 64, 40], [40, 64, 74], [84, 40, 46]];
+  function bake(map) {
+    base.width = map.w; base.height = map.h;
+    const bctx = base.getContext('2d'), img = bctx.createImageData(map.w, map.h);
+    for (let i = 0; i < map.w * map.h; i++) {
+      const [r, gg, b] = BIOME_RGB[map.biome ? map.biome[i] : 0];
+      const k = map.solid[i] ? 0.35 : 1 + map.level[i] * 0.35 + (map.kind[i] ? 0.15 : 0);
+      img.data.set([Math.min(255, r * k), Math.min(255, gg * k), Math.min(255, b * k), 255], i * 4);
+    }
+    bctx.putImageData(img, 0, 0);
+    baseMap = map;
+  }
+  function draw(state, t, storm) {
+    const map = state.map;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const W = Math.round(canvas.clientWidth * dpr), H = Math.round(canvas.clientHeight * dpr);
+    if (!W || !H) return;
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    if (baseMap !== map) bake(map);
+    const k = Math.min(W / (map.w + map.h), (H * 2) / (map.w + map.h));
+    const ox = W / 2 - ((map.w - map.h) / 2) * k, oy = H / 2 - ((map.w + map.h) / 4) * k;
+    const P = (x, y) => [ox + (x - y) * k, oy + ((x + y) * k) / 2];
+    g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, W, H);
+    g.imageSmoothingEnabled = false;
+    g.setTransform(k, k / 2, -k, k / 2, ox, oy);
+    g.drawImage(base, 0, 0);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    if (storm > 0) {
+      g.globalCompositeOperation = 'source-atop';
+      g.fillStyle = `rgba(47,166,200,${storm * 0.25})`; g.fillRect(0, 0, W, H);
+      g.globalCompositeOperation = 'source-over';
+    }
+    const dot = (x, y, r, color) => { const [X, Y] = P(x, y); g.fillStyle = color; g.fillRect(Math.round(X - r), Math.round(Y - r), r * 2, r * 2); };
+    const s = Math.max(1, Math.round(dpr));
+    for (const c of state.shards) if (!c.taken) dot(c.x, c.y, s, c.big ? '#b8262a' : '#c8d43c');
+    for (const n of state.nests || []) dot(n.x, n.y, s, '#6e7f45');
+    for (const h of state.shelters || []) { dot(h.x, h.y, 2 * s, '#0b0d10'); dot(h.x, h.y, s, '#f2c15a'); }
+    if (Math.floor(t * 3) % 2 === 0) dot(state.player.x, state.player.y, 2 * s, '#d2fbff');
+  }
+  return { draw };
 }

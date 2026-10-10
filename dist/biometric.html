@@ -142,6 +142,31 @@ body {
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #tune-json { width: 100%; box-sizing: border-box; min-height: 160px; font: 11px var(--mono); color: var(--ink); background: var(--night); border: 1px solid var(--line); border-radius: 4px; padding: 8px; resize: vertical; }
 
+#cycle {
+  position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none;
+}
+#food { display: flex; gap: 5px; align-items: center; }
+#food i { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--muted); box-sizing: border-box; }
+#food i.full { background: #c8d43c; border-color: #c8d43c; box-shadow: 0 0 6px rgba(200, 212, 60, 0.6); }
+#food b { width: 2px; height: 14px; background: var(--ink); margin: 0 3px; }
+#raintimer { display: flex; gap: 2px; }
+#raintimer i { width: 4px; height: 7px; background: #566670; }
+#raintimer i.gone { background: #1d2228; }
+#raintimer.warn i:not(.gone) { background: #c2412b; }
+#raintimer.rain i { background: #2fa6c8; animation: pour 0.4s linear infinite; }
+@keyframes pour { 50% { opacity: 0.3; } }
+#cycle-label { font: 500 10px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+#minimap {
+  position: fixed; right: 16px; top: calc(env(safe-area-inset-top, 0px) + 70px); width: 200px; height: 110px;
+  image-rendering: pixelated; pointer-events: none; opacity: 0.9;
+}
+#sleep {
+  position: fixed; inset: 0; background: #0b0d10; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; color: var(--ink); transition: opacity 0.6s; z-index: 5;
+}
+#sleep h2 { margin: 0; font: 700 30px/1 var(--display); letter-spacing: 0.06em; }
+#sleep p { margin: 0; color: var(--muted); font: 500 12px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; }
 #toast {
   position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 70px); transform: translateX(-50%);
   background: var(--glass); border: 1px solid var(--line); border-radius: 2px; padding: 8px 12px; font-size: 12px;
@@ -169,6 +194,8 @@ body {
   #char-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 560px) {
+  #minimap { width: 120px; height: 66px; top: calc(env(safe-area-inset-top, 0px) + 64px); }
+  #cycle { bottom: calc(env(safe-area-inset-bottom, 0px) + 120px); }
   .vitals-box { --vs: 1.5; } /* 3 device px per art px on 2x phones */
   #panel { top: auto; left: 0; width: 100%; max-height: 62%; border-left: 0; border-top: 1px solid var(--line); border-radius: 0; }
   .brand { display: none; }
@@ -199,7 +226,7 @@ body {
   <canvas id="vitals" aria-hidden="true"></canvas>
   <div class="vitals-cap"><span><span id="cap-hp">10 / 10</span> health</span><span><span id="cap-ch">10 / 30</span> charges</span></div>
 </div>
-<div class="keys"><kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>T</kbd> tune</div>
+<div class="keys"><kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>M</kbd> map · <kbd>N</kbd> sound · <kbd>R</kbd> restart · <kbd>T</kbd> tune</div>
 <button class="btn" id="tune-btn" type="button" aria-expanded="false" aria-controls="panel">Tune</button>
 <button class="btn" id="bug-btn" type="button">Bug</button>
 <button id="dash-btn" type="button">DASH</button>
@@ -209,10 +236,10 @@ body {
   <header>
     <h1>Biometric</h1>
     <p>Choose your bug. Each one moves with its own personality; the dung beetle plays by its own rules.
-    Collect every battery in the pump yard. Dashes cost charge. Cotton stainers hunt in pairs; cocoons shoot webs, and break open into spiders.</p>
+    Collect every battery in the Sprawl. Dashes cost charge. Eat gnats, and before the rain comes, curl up in a shelter hatch: the downpour kills. Cotton stainers hunt in pairs and hear you land; cocoons shoot webs.</p>
   </header>
   <div id="char-grid"></div>
-  <p class="hint">Click a bug, or use the arrow keys and Enter. In game: <kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>C</kbd> change bug · <kbd>T</kbd> tune</p>
+  <p class="hint">Click a bug, or use the arrow keys and Enter. In game: <kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>C</kbd> change bug · <kbd>M</kbd> map · <kbd>N</kbd> sound · <kbd>T</kbd> tune</p>
 </section>
 
 <section id="dead" hidden>
@@ -241,6 +268,13 @@ body {
 </aside>
 
 <div id="toast" hidden role="status"></div>
+<div id="cycle" aria-label="Food and rain timer">
+  <div id="food"></div>
+  <div id="raintimer"></div>
+  <div id="cycle-label">Cycle 1</div>
+</div>
+<canvas id="minimap" aria-label="Map"></canvas>
+<section id="sleep" hidden><h2 id="sleep-title">Cycle 2</h2><p id="sleep-text"></p></section>
 
 <script>
 (() => {
@@ -340,6 +374,42 @@ const DEFAULT_PARAMS = {
   knockback: 7,
   stunTime: 0.35,
   invulnTime: 0.8,
+  // Rain cycle (only in arenas with shelters).
+  cycleLength: 150, // s until the downpour
+  rainWarn: 30, // s of warning drizzle before it
+  rainTick: 1.2, // s between downpour hits outside a shelter
+  rainDamage: 1,
+  rainSlow: 0.75, // speed multiplier in the downpour
+  foodQuota: 4, // food needed to sleep well
+  maxFood: 8,
+  shelterReach: 0.45, // tiles from the hatch centre
+  sleepTime: 1, // s standing still on a shelter to curl up
+  sleepHeal: 4,
+  hungerDamage: 2,
+  // Gnats: prey that lives around nests.
+  gnatsPerNest: 5,
+  nestRespawn: 6, // s
+  gnatHover: 0.7, // levels above the floor
+  gnatSpeed: 1.4,
+  gnatFlee: 3.8,
+  gnatFear: 2.4,
+  gnatLeash: 5,
+  gnatRadius: 0.25,
+  // Hearing: loud things make noise; idle creatures investigate it.
+  noiseDash: 4,
+  noiseLandBase: 2,
+  noiseLandPerLevel: 3,
+  noiseKill: 6,
+  noiseCocoon: 5,
+  investigateTime: 6,
+  // Creatures live for themselves: they get hungry and go home before the rain.
+  hungerTime: 12,
+  gnatHuntRange: 4,
+  // Lineage: vents remember their dead and send back elders.
+  lineageStep: 0.34,
+  lineageMax: 0.75,
+  elderSpeed: 1.3,
+  elderSight: 1.5,
 };
 
 // Seeded PRNG (mulberry32) kept in the state, so runs stay reproducible.
@@ -375,6 +445,8 @@ function parseLevel(def) {
   const critters = [];
   const vents = [];
   const cocoons = [];
+  const shelters = [];
+  const nests = [];
   let spawn = { x: w / 2, y: h / 2 };
   for (let ty = 0; ty < h; ty++) {
     for (let tx = 0; tx < w; tx++) {
@@ -385,6 +457,8 @@ function parseLevel(def) {
       else if (c === 'B') shards.push({ x: tx + 0.5, y: ty + 0.5, big: true });
       else if (c === 'V') vents.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'O') cocoons.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === 'H') shelters.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === 'n') nests.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'b' || c === 's') critters.push({ x: tx + 0.5, y: ty + 0.5 });
       biome[ty * w + tx] = Math.max(0, BIOME_KEYS.indexOf((brows[ty] ?? '')[tx] ?? 'y'));
       const hc = (hrows[ty] ?? '')[tx] ?? '0';
@@ -400,7 +474,7 @@ function parseLevel(def) {
     const lx = tx - sdx[i], ly = ty - sdy[i];
     level[i] = lx >= 0 && ly >= 0 && lx < w && ly < h ? level[ly * w + lx] : 0;
   }
-  return { name: def.name, w, h, solid, level, kind, sdx, sdy, biome, shards, critters, vents, cocoons, spawn };
+  return { name: def.name, w, h, solid, level, kind, sdx, sdy, biome, shards, critters, vents, cocoons, shelters, nests, spawn };
 }
 
 function isSolid(map, tx, ty) {
@@ -499,6 +573,8 @@ function makeSpider(state, x, y, extra = {}) {
     type: 'stainer', // 'stainer' (cotton stainer, hunts in pairs) or 'spider' (from cocoons, hunts alone)
     alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
     lungeX: 0, lungeY: 0, stateTime: 0, stateTotal: 0, deadTime: 0,
+    vent: -1, elder: false, hp: 1, lastDash: -1, ballCool: 0,
+    hunger: 0, hunting: -1, listen: null, home: false, burrowed: false,
     ...extra,
   };
   state.critters.push(c);
@@ -530,6 +606,8 @@ function createState(level, seed = 1, params = DEFAULT_PARAMS) {
       stun: 0, invuln: 0,
       webbed: 0, // s of web slowdown left
       dashId: 0, // counts dashes, so one dash hits a cocoon only once
+      food: 0, // pips; foodQuota of them buy a good sleep
+      sleep: 0, // s spent curled up on a shelter
     },
     shards: map.shards.map((s) => ({ x: s.x, y: s.y, big: s.big, taken: false })),
     collected: 0,
@@ -554,7 +632,16 @@ function createState(level, seed = 1, params = DEFAULT_PARAMS) {
   state.vents = map.vents.map((v) => ({
     x: v.x, y: v.y,
     timer: params.ventFirstMin + rand(state) * (params.ventFirstMax - params.ventFirstMin),
+    lineage: 0,
   }));
+  state.cycle = {
+    on: map.shelters.length > 0, n: 1, t: 0, phase: 'clear', rainTimer: 0,
+    len: params.cycleLength, warn: params.rainWarn,
+  };
+  state.shelters = map.shelters.map((h) => ({ x: h.x, y: h.y, z: groundLevel(map, h.x, h.y) }));
+  state.nests = map.nests.map((n) => ({ x: n.x, y: n.y, timer: params.nestRespawn }));
+  state.gnats = [];
+  fillNests(state, params);
   return state;
 }
 
@@ -687,11 +774,12 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     if (p.webbed > 0) { p.webbed = 0; state.events.push({ type: 'webTorn' }); } // a dash tears the web
     p.heat = Math.min(1, p.heat + params.dashHeat);
     if (p.heat >= 1) p.overheated = true;
+    makeNoise(state, params, p.x, p.y, params.noiseDash);
   } else {
     p.heat = Math.max(0, p.heat - params.heatCool * dt);
     if (p.overheated && p.heat <= params.overheatRecover) p.overheated = false;
   }
-  const slow = p.webbed > 0 ? params.webSlow : 1;
+  const slow = (p.webbed > 0 ? params.webSlow : 1) * (state.cycle.on && state.cycle.phase === 'rain' ? params.rainSlow : 1);
   const topSpeed = params.maxSpeed * (p.overheated ? params.overheatSpeed : 1) * slow;
 
   let mvx, mvy;
@@ -743,6 +831,7 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   if (fell >= 0.5) {
     state.events.push({ type: 'land', who: 'player', x: p.x, y: p.y, height: fell });
     if (fell >= params.fallStunHeight) p.stun = Math.max(p.stun, params.fallStun);
+    makeNoise(state, params, p.x, p.y, params.noiseLandBase + params.noiseLandPerLevel * fell);
   }
 
   const reach = r + params.pickupRange;
@@ -758,10 +847,20 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     }
   }
 
+  stepCycle(state, params, dt);
+  if (state.dead) { state.tick++; return state; }
+  stepGnats(state, params, dt);
   stepVents(state, params, dt);
   stepCocoons(state, params, dt, dashing);
   stepWebs(state, params, dt, dashing);
   stepSpiders(state, params, dt, dashing);
+  if (state.critters.some((c) => c.burrowed)) {
+    state.critters = state.critters.filter((c) => {
+      if (!c.burrowed) return true;
+      state.events.push({ type: 'burrow', id: c.id, x: c.x, y: c.y });
+      return false;
+    });
+  }
 
   if (!state.won && !state.dead) {
     state.time += dt;
@@ -778,7 +877,7 @@ function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 // A spider that is free to pair up for an attack.
-const canPair = (c) => c.alive && c.type === 'stainer' && c.mode === 'wander' && c.cooldown <= 0;
+const canPair = (c) => c.alive && c.type === 'stainer' && c.mode === 'wander' && c.cooldown <= 0 && !c.home;
 
 function nearestPartner(state, c, range) {
   let best = null, bestD = range;
@@ -809,10 +908,177 @@ function hitPlayer(state, c, params) {
   }
 }
 
-function killSpider(state, c, dirX = state.player.dashX, dirY = state.player.dashY) {
+function killSpider(state, c, params, dirX = state.player.dashX, dirY = state.player.dashY) {
   c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0; c.deadTime = 0;
   state.kills++;
-  state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX, dirY });
+  if (c.vent >= 0 && state.vents[c.vent]) state.vents[c.vent].lineage++;
+  state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX, dirY, elder: c.elder });
+  makeNoise(state, params, c.x, c.y, params.noiseKill);
+}
+
+// ---- rain cycle, shelters, food ------------------------------------------------
+
+// 0 when clear, rising to 0.4 over the warning, 1 in the downpour.
+function rainLevel(state) {
+  const cy = state.cycle;
+  if (!cy || !cy.on) return 0;
+  if (cy.phase === 'rain') return 1;
+  if (cy.phase === 'warning') return 0.4 * Math.min(1, (cy.t - (cy.len - cy.warn)) / cy.warn);
+  return 0;
+}
+
+// The shelter the player is standing in, or null.
+function shelterAt(state, params, e = state.player) {
+  for (const h of state.shelters) {
+    if (Math.hypot(h.x - e.x, h.y - e.y) <= params.shelterReach && Math.abs(h.z - e.z) < SAME_FLOOR) return h;
+  }
+  return null;
+}
+
+function stepCycle(state, params, dt) {
+  const cy = state.cycle, p = state.player;
+  if (!cy.on) return;
+  cy.t += dt;
+  const phase = cy.t < cy.len - cy.warn ? 'clear' : cy.t < cy.len ? 'warning' : 'rain';
+  if (phase !== cy.phase) { cy.phase = phase; state.events.push({ type: 'phase', phase, cycle: cy.n }); }
+  const sh = shelterAt(state, params);
+  if (sh && !p.air && Math.hypot(p.vx, p.vy) < 0.5 && (p.food >= params.foodQuota || phase !== 'clear')) {
+    p.sleep += dt;
+    if (p.sleep >= params.sleepTime) { hibernate(state, params, sh); return; }
+  } else p.sleep = 0;
+  if (phase === 'rain' && !sh) {
+    cy.rainTimer += dt;
+    if (cy.rainTimer >= params.rainTick) {
+      cy.rainTimer -= params.rainTick;
+      p.health = Math.max(0, p.health - params.rainDamage);
+      state.hits++;
+      state.events.push({ type: 'rainHit', x: p.x, y: p.y, health: p.health });
+      if (p.health <= 0 && !state.won) { state.dead = true; state.events.push({ type: 'death', cause: 'rain' }); }
+    }
+  } else cy.rainTimer = 0;
+}
+
+// Sleep through the rain: the next cycle starts.
+function hibernate(state, params, sh) {
+  const cy = state.cycle, p = state.player;
+  const fed = p.food >= params.foodQuota;
+  if (fed) { p.food -= params.foodQuota; p.health = Math.min(params.maxHealth, p.health + params.sleepHeal); }
+  else p.health = Math.max(1, p.health - params.hungerDamage);
+  cy.n++; cy.t = 0; cy.phase = 'clear'; cy.rainTimer = 0;
+  Object.assign(p, { sleep: 0, webbed: 0, stun: 0, vx: 0, vy: 0, x: sh.x, y: sh.y, px: sh.x, py: sh.y, heat: 0, overheated: false });
+  state.webs = [];
+  state.gnats = [];
+  fillNests(state, params);
+  for (const v of state.vents) v.timer = params.ventFirstMin + rand(state) * (params.ventFirstMax - params.ventFirstMin);
+  state.events.push({ type: 'sleep', fed, cycle: cy.n, x: sh.x, y: sh.y });
+}
+
+// ---- gnats -------------------------------------------------------------------
+
+function makeGnat(state, params, ni) {
+  const n = state.nests[ni];
+  const a = rand(state) * Math.PI * 2, r = 0.3 + rand(state) * 1.2;
+  const x = n.x + Math.cos(a) * r, y = n.y + Math.sin(a) * r;
+  const okX = isSolid(state.map, Math.floor(x), Math.floor(y)) ? n.x : x, okY = okX === n.x ? n.y : y;
+  const h = groundLevel(state.map, okX, okY) + params.gnatHover;
+  state.gnats.push({
+    id: state.nextId++, nest: ni, x: okX, y: okY, px: okX, py: okY, h, ph: h, vx: 0, vy: 0,
+    dirX: Math.cos(a), dirY: Math.sin(a), timer: rand(state) * 1.5,
+  });
+}
+
+function fillNests(state, params) {
+  state.nests.forEach((n, i) => {
+    for (let k = 0; k < params.gnatsPerNest; k++) makeGnat(state, params, i);
+    n.timer = params.nestRespawn;
+  });
+}
+
+function stepGnats(state, params, dt) {
+  const p = state.player, map = state.map;
+  const goHome = state.cycle.on && state.cycle.phase !== 'clear';
+  if (!goHome) {
+    state.nests.forEach((n, i) => {
+      n.timer -= dt;
+      if (n.timer > 0) return;
+      n.timer = params.nestRespawn;
+      if (state.gnats.filter((g) => g.nest === i).length < params.gnatsPerNest) makeGnat(state, params, i);
+    });
+  }
+  state.gnats = state.gnats.filter((g) => {
+    g.px = g.x; g.py = g.y; g.ph = g.h;
+    const n = state.nests[g.nest];
+    let fx = 0, fy = 0, scared = false;
+    const fear = (e) => {
+      const dx = g.x - e.x, dy = g.y - e.y, d = Math.hypot(dx, dy);
+      if (d < params.gnatFear && d > 1e-6) { const k = 1.3 - d / params.gnatFear; fx += (dx / d) * k; fy += (dy / d) * k; scared = true; }
+    };
+    if (!state.dead) fear(p);
+    for (const c of state.critters) if (c.alive && c.hunting === g.id) fear(c);
+    let tx, ty;
+    const toNest = Math.hypot(n.x - g.x, n.y - g.y);
+    if (goHome) {
+      if (toNest < 0.3) return false; // hidden in the nest until the next cycle
+      tx = ((n.x - g.x) / toNest) * params.gnatFlee * 0.8; ty = ((n.y - g.y) / toNest) * params.gnatFlee * 0.8;
+    } else if (scared) {
+      const l = Math.hypot(fx, fy) || 1;
+      tx = (fx / l) * params.gnatFlee; ty = (fy / l) * params.gnatFlee;
+    } else {
+      g.timer -= dt;
+      if (g.timer <= 0) {
+        const a = rand(state) * Math.PI * 2;
+        g.dirX = Math.cos(a); g.dirY = Math.sin(a); g.timer = 0.4 + rand(state) * 1.2;
+      }
+      if (toNest > params.gnatLeash) { g.dirX = (n.x - g.x) / toNest; g.dirY = (n.y - g.y) / toNest; }
+      tx = g.dirX * params.gnatSpeed; ty = g.dirY * params.gnatSpeed;
+    }
+    [g.vx, g.vy] = approach(g.vx, g.vy, tx, ty, 14 * dt);
+    // Flying: only walls (and the arena edge) stop them; they bounce off.
+    const nx = g.x + g.vx * dt, ny = g.y + g.vy * dt;
+    if (isSolid(map, Math.floor(nx), Math.floor(g.y))) { g.vx = -g.vx; g.dirX = -g.dirX; } else g.x = nx;
+    if (isSolid(map, Math.floor(g.x), Math.floor(ny))) { g.vy = -g.vy; g.dirY = -g.dirY; } else g.y = ny;
+    const want = groundLevel(map, g.x, g.y) + params.gnatHover;
+    g.h += (want - g.h) * Math.min(1, 5 * dt);
+    if (!state.dead && Math.hypot(g.x - p.x, g.y - p.y) < params.radius + params.gnatRadius && Math.abs(g.h - (p.z + 0.4)) < 1.2) {
+      p.food = Math.min(params.maxFood, p.food + 1);
+      state.events.push({ type: 'eat', who: 'player', x: g.x, y: g.y, z: g.h, food: p.food });
+      return false;
+    }
+    return true;
+  });
+}
+
+// ---- hearing -----------------------------------------------------------------
+
+const aggroOf = (c, params) => params.aggroRange + (c.elder ? params.elderSight : 0);
+
+// A loud sound: creatures that aren't already hunting the player go and look.
+function makeNoise(state, params, x, y, r) {
+  state.events.push({ type: 'noise', x, y, r });
+  const p = state.player;
+  for (const c of state.critters) {
+    if (!c.alive || c.home || Math.hypot(c.x - x, c.y - y) > r) continue;
+    const d = dist(c, p);
+    const idle = c.type === 'spider'
+      ? c.mode === 'stalk' && d >= params.spiderAggro
+      : c.mode === 'wander' && !c.fleeing && d >= aggroOf(c, params);
+    if (idle) c.listen = { x, y, t: params.investigateTime };
+  }
+}
+
+// How dire things are for the player, 0..1 (drives the music).
+function threatLevel(state, params = DEFAULT_PARAMS) {
+  const p = state.player;
+  let sum = p.webbed > 0 ? 0.3 : 0;
+  for (const c of state.critters) {
+    if (!c.alive) continue;
+    const d = dist(c, p);
+    if (d > 9) continue;
+    if (['windup', 'lunge', 'swindup', 'slunge'].includes(c.mode)) sum += 1;
+    else if (c.type === 'spider' ? d < params.spiderAggro : d < aggroOf(c, params)) sum += 0.5;
+    else sum += 0.1;
+  }
+  return 1 - Math.exp(-sum);
 }
 
 // ---- cocoons, web turrets, webs -------------------------------------------------
@@ -863,6 +1129,7 @@ function stepCocoons(state, params, dt, dashing) {
       c.reload = Math.max(c.reload, 0.6); // the turret is shaken
       c.charge = 0;
       state.events.push({ type: 'cocoonHit', id: c.id, x: c.x, y: c.y, hp: c.hp });
+      makeNoise(state, params, c.x, c.y, params.noiseCocoon);
     }
     if (hit && c.hp <= 0) {
       c.alive = false;
@@ -876,6 +1143,7 @@ function stepCocoons(state, params, dt, dashing) {
       continue;
     }
     c.reload = Math.max(0, c.reload - dt);
+    if (state.cycle.on && state.cycle.phase === 'rain') { c.sees = false; c.charge = 0; continue; } // shuttered
     const dx = p.x - c.x, dy = p.y - c.y, d = Math.hypot(dx, dy);
     const muzzle = c.z + 0.5;
     c.sees = !state.dead && d <= params.turretRange && Math.abs(p.z - c.z) < 1.5
@@ -1077,15 +1345,48 @@ function stepVents(state, params, dt) {
     if (v.timer > 0) continue;
     const alive = state.critters.filter((c) => c.alive && c.type === 'stainer').length;
     const d = dist(v, p);
-    if (alive >= params.maxSpiders || d < params.ventSafe || d > params.ventRange) { v.timer = 1; continue; }
+    if (alive >= params.maxSpiders || d < params.ventSafe || d > params.ventRange
+      || (state.cycle.on && state.cycle.phase !== 'clear')) { v.timer = 1; continue; }
+    const elder = v.lineage > 0 && rand(state) < Math.min(params.lineageMax, params.lineageStep * v.lineage);
     const c = makeSpider(state, v.x, v.y, {
       mode: 'emerge', stateTime: params.emergeTime, stateTotal: params.emergeTime,
+      vent: state.vents.indexOf(v), elder, hp: elder ? 2 : 1,
     });
     const a = rand(state) * Math.PI * 2;
     c.dirX = Math.cos(a); c.dirY = Math.sin(a);
     state.events.push({ type: 'spawn', id: c.id, x: v.x, y: v.y });
     v.timer = params.ventMin + rand(state) * (params.ventMax - params.ventMin);
   }
+}
+
+// Walk (by path) to where a sound came from; give up after a while.
+function investigate(state, c, params, dt, speed) {
+  c.listen.t -= dt;
+  const wp = pathTarget(state, c, c.listen);
+  const dx = c.listen.x - c.x, dy = c.listen.y - c.y;
+  if (!wp || c.listen.t <= 0 || Math.hypot(dx, dy) < 0.5) {
+    c.listen = null; c.dirX = 0; c.dirY = 0; c.timer = 0.8; // stop and look around
+    return [0, 0, params.critterAccel];
+  }
+  const ux = wp.x - c.x, uy = wp.y - c.y, l = Math.hypot(ux, uy) || 1;
+  c.dirX = ux / l; c.dirY = uy / l;
+  return [c.dirX * speed, c.dirY * speed, params.critterAccel];
+}
+
+// Before the rain: walk home to the nearest vent and crawl in.
+function goHome(state, c, params, speed) {
+  let best = null, bd = Infinity;
+  for (const v of state.vents) { const d = dist(c, v); if (d < bd) { bd = d; best = v; } }
+  if (!best) return [0, 0, params.critterAccel];
+  if (bd < 0.35 && Math.abs(c.z - groundLevel(state.map, best.x, best.y)) < SAME_FLOOR) {
+    c.burrowed = true;
+    return [0, 0, params.critterAccel];
+  }
+  const wp = pathTarget(state, c, best);
+  if (!wp) return [0, 0, params.critterAccel];
+  const ux = wp.x - c.x, uy = wp.y - c.y, l = Math.hypot(ux, uy) || 1;
+  c.dirX = ux / l; c.dirY = uy / l; c.fleeing = false;
+  return [c.dirX * speed, c.dirY * speed, params.critterAccel];
 }
 
 // Spider from a cocoon: drops, then hunts alone. Stalks toward the player,
@@ -1112,6 +1413,7 @@ function spiderBrain(state, c, params, dt, dx, dy, d) {
     if (c.stateTime <= 0) { c.mode = 'stalk'; c.cooldown = params.spiderCooldown; }
     return [c.vx, c.vy, Infinity];
   }
+  if (c.home) return goHome(state, c, params, params.spiderSpeed);
   // Stalking.
   if (!state.dead && sameFloor && d < params.spiderLungeRange && c.cooldown <= 0) {
     c.mode = 'swindup'; c.stateTime = params.spiderWindup; c.stateTotal = params.spiderWindup;
@@ -1119,8 +1421,10 @@ function spiderBrain(state, c, params, dt, dx, dy, d) {
   }
   if (!state.dead && d < params.spiderAggro) {
     c.dirX = -dx / d; c.dirY = -dy / d;
+    c.listen = null; // hunting: sounds don't matter
     return [c.dirX * params.spiderSpeed, c.dirY * params.spiderSpeed, params.critterAccel];
   }
+  if (c.listen) return investigate(state, c, params, dt, params.critterSpeed * 1.6);
   c.timer -= dt;
   if (c.timer <= 0) {
     const a = rand(state) * Math.PI * 2;
@@ -1140,6 +1444,10 @@ function stepSpiders(state, params, dt, dashing) {
     c.px = c.x; c.py = c.y; c.pz = c.z;
     if (!c.alive) { c.deadTime += dt; continue; }
     c.cooldown = Math.max(0, c.cooldown - dt);
+    c.ballCool = Math.max(0, c.ballCool - dt);
+    // Before the rain, everyone not in the middle of an attack heads home.
+    if (state.cycle.on && state.cycle.phase !== 'clear' && !c.home
+      && ['wander', 'stalk'].includes(c.mode)) { c.home = true; c.listen = null; c.partner = -1; }
   }
   // Old corpses leave the simulation (the renderer keeps a husk on the floor).
   state.critters = state.critters.filter((c) => {
@@ -1150,7 +1458,7 @@ function stepSpiders(state, params, dt, dashing) {
 
   // Pair up, in list order so the result is deterministic.
   state.critters.forEach((c) => {
-    if (!canPair(c) || dist(c, p) > params.aggroRange) return;
+    if (!canPair(c) || dist(c, p) > aggroOf(c, params)) return;
     const o = nearestPartner(state, c, params.pairRange);
     if (!o) return;
     for (const [a, partner, role] of [[c, o.id, 0], [o, c.id, 1]]) {
@@ -1164,6 +1472,7 @@ function stepSpiders(state, params, dt, dashing) {
     const dx = c.x - p.x, dy = c.y - p.y;
     const d = Math.hypot(dx, dy) || 1;
     let tx = 0, ty = 0, accel = params.critterAccel;
+    const fast = c.elder ? params.elderSpeed : 1;
 
     if (c.type === 'spider') {
       [tx, ty, accel] = spiderBrain(state, c, params, dt, dx, dy, d);
@@ -1178,7 +1487,7 @@ function stepSpiders(state, params, dt, dashing) {
         c.lungeX = c.dirX; c.lungeY = c.dirY;
       }
     } else if (c.mode === 'lunge') {
-      c.vx = c.lungeX * params.lungeSpeed; c.vy = c.lungeY * params.lungeSpeed;
+      c.vx = c.lungeX * params.lungeSpeed * fast; c.vy = c.lungeY * params.lungeSpeed * fast;
       tx = c.vx; ty = c.vy; accel = Infinity;
       c.stateTime -= dt;
       if (c.stateTime <= 0) {
@@ -1197,19 +1506,37 @@ function stepSpiders(state, params, dt, dashing) {
       if (c.stateTime <= 0) {
         c.mode = 'wander'; c.partner = -1; c.cooldown = params.attackCooldown; c.timer = 0;
       }
+    } else if (c.home) {
+      [tx, ty, accel] = goHome(state, c, params, params.critterFleeSpeed * 0.7 * fast);
     } else {
       // Wander mode.
-      const partner = c.cooldown <= 0 && d < params.aggroRange ? nearestPartner(state, c, params.regroupRange) : null;
+      c.hunger += dt;
+      const hunted = c.hunger >= params.hungerTime ? nearestGnat(state, c, params) : null;
+      c.hunting = hunted ? hunted.id : -1;
+      const partner = c.cooldown <= 0 && d < aggroOf(c, params) ? nearestPartner(state, c, params.regroupRange) : null;
+      if (partner || d < aggroOf(c, params)) c.listen = null; // hunting the player: sounds don't matter
       if (partner) {
         const px = partner.x - c.x, py = partner.y - c.y, pl = Math.hypot(px, py) || 1;
         c.dirX = px / pl; c.dirY = py / pl; c.fleeing = false; c.timer = 0.2;
-        tx = c.dirX * params.regroupSpeed; ty = c.dirY * params.regroupSpeed;
+        tx = c.dirX * params.regroupSpeed * fast; ty = c.dirY * params.regroupSpeed * fast;
+      } else if (d >= params.critterFear && hunted) {
+        // Hungry: chase a gnat and eat it.
+        const gx = hunted.x - c.x, gy = hunted.y - c.y, gl = Math.hypot(gx, gy) || 1;
+        c.dirX = gx / gl; c.dirY = gy / gl; c.fleeing = false;
+        tx = c.dirX * params.regroupSpeed * fast; ty = c.dirY * params.regroupSpeed * fast;
+        if (gl < params.critterRadius + params.gnatRadius) {
+          state.gnats = state.gnats.filter((g) => g !== hunted);
+          c.hunger = 0; c.hunting = -1;
+          state.events.push({ type: 'eat', who: c.id, x: hunted.x, y: hunted.y, z: hunted.h });
+        }
+      } else if (d >= params.critterFear && c.listen) {
+        [tx, ty, accel] = investigate(state, c, params, dt, params.regroupSpeed * fast);
       } else {
         let speed;
         if (d < params.critterFear) {
           c.fleeing = true;
           c.dirX = dx / d; c.dirY = dy / d;
-          speed = params.critterFleeSpeed;
+          speed = params.critterFleeSpeed * fast;
           c.timer = 0.4; // keep running a little after leaving the fear radius
         } else {
           c.timer -= dt;
@@ -1223,7 +1550,7 @@ function stepSpiders(state, params, dt, dashing) {
             }
             c.timer = 0.8 + rand(state) * 1.8;
           }
-          speed = c.fleeing ? params.critterFleeSpeed : params.critterSpeed;
+          speed = (c.fleeing ? params.critterFleeSpeed : params.critterSpeed) * fast;
         }
         tx = c.dirX * speed; ty = c.dirY * speed;
       }
@@ -1241,12 +1568,23 @@ function stepSpiders(state, params, dt, dashing) {
     if (c.mode === 'wander' && want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
 
     const sameFloor = Math.abs(c.z - p.z) < SAME_FLOOR;
-    if (dashing && sameFloor && dist(c, p) < contact + params.killMargin) { killSpider(state, c); continue; }
+    if (dashing && sameFloor && dist(c, p) < contact + params.killMargin) {
+      // Elders survive their first dash (only once per dash): thrown back.
+      if (c.elder && (c.hp > 1 || c.lastDash === p.dashId)) {
+        if (c.lastDash !== p.dashId) { c.lastDash = p.dashId; elderThrow(state, c, params, p.dashX, p.dashY); }
+        continue;
+      }
+      killSpider(state, c, params); continue;
+    }
     if (p.ball) {
       // A fast ball squashes whatever it rolls over.
       const b = p.ball, bs = Math.hypot(b.vx, b.vy);
       if (bs >= params.ballKillSpeed && Math.abs(c.z - b.z) < SAME_FLOOR && dist(c, b) < params.ballRadius + params.critterRadius) {
-        killSpider(state, c, b.vx / bs, b.vy / bs); continue;
+        if (c.elder && (c.hp > 1 || c.ballCool > 0)) {
+          if (c.ballCool <= 0) { c.ballCool = 0.4; elderThrow(state, c, params, b.vx / bs, b.vy / bs); }
+          continue;
+        }
+        killSpider(state, c, params, b.vx / bs, b.vy / bs); continue;
       }
     }
     if ((c.mode === 'lunge' || c.mode === 'slunge') && !c.hitDone && sameFloor && dist(c, p) < contact + 0.05) {
@@ -1254,6 +1592,23 @@ function stepSpiders(state, params, dt, dashing) {
       hitPlayer(state, c, params);
     }
   }
+}
+
+function elderThrow(state, c, params, ux, uy) {
+  c.hp--;
+  c.mode = 'thrown'; c.stateTime = params.thrownTime; c.partner = -1;
+  c.vx = ux * params.thrownSpeed * 1.4; c.vy = uy * params.thrownSpeed * 1.4;
+  state.events.push({ type: 'elderHit', id: c.id, x: c.x, y: c.y });
+}
+
+function nearestGnat(state, c, params) {
+  let best = null, bd = params.gnatHuntRange;
+  for (const g of state.gnats) {
+    if (Math.abs(g.h - params.gnatHover - c.z) > SAME_FLOOR) continue;
+    const d = dist(c, g);
+    if (d < bd) { bd = d; best = g; }
+  }
+  return best;
 }
 
 // Smallest gap between a circle and anything that blocks it (walls, and
@@ -1278,7 +1633,8 @@ function wallClearance(state, r, p = state.player) {
 // Levels. A level is { name, map, heights, biomes } as rows of characters:
 //   map:     '#' wall, '.' floor, 'P' player spawn, '*' battery cell (+3),
 //            'B' big red battery (+9), 'V' vent (spawns cotton stainers),
-//            'O' cocoon with a web turret, 'b' or 's' cotton stainer.
+//            'O' cocoon with a web turret, 'b' or 's' cotton stainer,
+//            'H' shelter (sleep through the rain), 'n' gnat nest.
 //   heights: '0'-'9' flat level; ramps rise toward '>' +x, '<' -x, 'v' +y,
 //            '^' -y; stairs toward 'E' +x, 'W' -x, 'S' +y, 'N' -y. A slope
 //            starts at the level of the tile on its low side, ends one higher.
@@ -1324,11 +1680,11 @@ function valueNoise(seed, cell) {
 
 // Per-biome flavour for the generator.
 const STYLE = {
-  y: { plateaus: 2, walls: 0.012, stairs: 0.5, small: 6, big: 1, vents: 1, cocoons: 0 },
-  g: { plateaus: 4, walls: 0.02, stairs: 0.2, small: 6, big: 1, vents: 3, cocoons: 2 },
-  f: { plateaus: 4, walls: 0.035, stairs: 0.8, small: 6, big: 2, vents: 3, cocoons: 2 },
-  d: { plateaus: 4, walls: 0.025, stairs: 0.7, small: 6, big: 1, vents: 3, cocoons: 2 },
-  h: { plateaus: 4, walls: 0.025, stairs: 0.4, small: 6, big: 2, vents: 3, cocoons: 4 },
+  y: { plateaus: 2, walls: 0.012, stairs: 0.5, small: 6, big: 1, vents: 1, cocoons: 0, shelters: 1, nests: 1 },
+  g: { plateaus: 4, walls: 0.02, stairs: 0.2, small: 6, big: 1, vents: 3, cocoons: 2, shelters: 1, nests: 3 },
+  f: { plateaus: 4, walls: 0.035, stairs: 0.8, small: 6, big: 2, vents: 3, cocoons: 2, shelters: 1, nests: 1 },
+  d: { plateaus: 4, walls: 0.025, stairs: 0.7, small: 6, big: 1, vents: 3, cocoons: 2, shelters: 1, nests: 2 },
+  h: { plateaus: 4, walls: 0.025, stairs: 0.4, small: 6, big: 2, vents: 3, cocoons: 4, shelters: 1, nests: 2 },
 };
 
 function generateArena(seed = 7, size = 80) {
@@ -1472,10 +1828,12 @@ function tryArena(seed, W) {
   };
   for (const b of 'ygfdh') {
     const st = STYLE[b];
+    if (put(b, 'H', st.shelters, 6, 5, false) < st.shelters) return null;
     if (put(b, 'O', st.cocoons, 5, 10, false) < st.cocoons) return null;
     if (put(b, 'V', st.vents, 6, 10, false) < st.vents) return null;
     if (put(b, 'B', st.big, 4, 6, true) < st.big) return null;
     if (put(b, '*', st.small, 4, 3, true) < st.small) return null;
+    if (put(b, 'n', st.nests, 5, 6, false) < st.nests) return null;
   }
   return { ...def, seed, map: tiles.map((r) => r.join('')) };
 }
@@ -1908,6 +2266,7 @@ const COLORS = {
   cell0: '#8f9a2a', cell1: '#c8d43c', cell2: '#f4f7a0',
   elec0: '#2fa6c8', elec1: '#6fe6ff', elec2: '#d2fbff',
   hot0: '#c2412b', hot1: '#ff7a3c',
+  neon0: '#6e2257', neon1: '#e04cb0',
   blood0: '#3a0c10', blood1: '#7a1418', blood2: '#b8262a',
   hull0: '#6b6a64', hull1: '#a19d90', hull2: '#d1cbbb',
   limb: '#101315',
@@ -2227,7 +2586,8 @@ function createRenderer(canvas) {
   let ctx = low.getContext('2d', { willReadFrequently: true }); // swapped while drawing menu previews
   const lctx = light.getContext('2d');
   const table = buildLut();
-  const fx = { particles: [], trail: [], drops: [] };
+  const fx = { particles: [], trail: [], drops: [], rings: [], splashes: [], sheets: [] };
+  const grade = { r: 74, g: 90, b: 102 }; // current colour grade, eased toward the biome's
   let lights = [];
   let w = 0, h = 0, dpr = 1;
   let scale = 1; // low-res pixels per world pixel this frame
@@ -2302,7 +2662,19 @@ function createRenderer(canvas) {
   // Biome of a tile: 0 yard, 1 garden, 2 foundry, 3 drains, 4 hive (sim BIOME_KEYS).
   const biomeAt = (tx, ty) => (map && map.biome ? map.biome[ty * map.w + tx] : 0);
 
+  // Rain World-like depth: low floors sink into a biome-tinted fog.
+  const FOG = () => [C.puddle0, C.moss0, C.grime, C.puddle0, C.blood0];
+  function fogTile(tx, ty, level) {
+    const a = level <= 0 ? 0.2 : level < 2 ? 0.08 : 0;
+    if (!a) return;
+    diamond(tx, ty, 0);
+    ctx.globalAlpha *= a; ctx.fillStyle = FOG()[biomeAt(tx, ty)]; ctx.fill(); ctx.globalAlpha /= a;
+  }
   function drawDeck(tx, ty, level) {
+    drawDeckTile(tx, ty, level);
+    fogTile(tx, ty, level);
+  }
+  function drawDeckTile(tx, ty, level) {
     const b = biomeAt(tx, ty);
     if (b) { BIOME_DECK[b](tx, ty, level); return; }
     const n = hash(tx, ty, 7);
@@ -2335,6 +2707,11 @@ function createRenderer(canvas) {
   }
 
   function drawFloor(tx, ty, t) {
+    drawFloorTile(tx, ty, t);
+    fogTile(tx, ty, 0);
+    if (biomeAt(tx, ty) === 1) gardenOrnaments(tx, ty);
+  }
+  function drawFloorTile(tx, ty, t) {
     const b = biomeAt(tx, ty);
     if (b) { BIOME_FLOOR[b](tx, ty, t); return; }
     const n = hash(tx, ty), v = hash(tx, ty, 1);
@@ -2390,7 +2767,36 @@ function createRenderer(canvas) {
   };
   const glowPulse = (t, seed, speed = 1.5) => 0.5 + 0.5 * Math.sin(t * speed + seed * 7);
 
-  // Overgrown garden: dark soil, moss, grass tufts, glowing mushrooms.
+  // A curl: a spiral stroke, the building block of the ornamental flora.
+  function curl(X, Y, r, dir, turns, color, width = 1) {
+    ctx.strokeStyle = color; ctx.lineWidth = px(width); ctx.beginPath();
+    const n = 14;
+    for (let i = 0; i <= n; i++) {
+      const f = i / n, a = dir * f * turns * Math.PI * 2, rr = r * (1 - f * 0.85);
+      const x = X + Math.cos(a) * rr * dir, y = Y + Math.sin(a) * rr;
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+  }
+  // Ornament plant: a stem rising from the floor that rolls into curls,
+  // drawn like a spray-painted flourish rather than a real plant.
+  function ornament(x, y, seed, lift = 0, scaleK = 1) {
+    const X = sx(x, y), Y = sy(x, y) - lift;
+    const h = (12 + hash(seed, 1, 3) * 10) * scaleK, lean = (hash(seed, 2, 3) - 0.5) * 10 * scaleK;
+    ctx.strokeStyle = C.moss2; ctx.lineWidth = px(1.5);
+    ctx.beginPath(); ctx.moveTo(X, Y); ctx.quadraticCurveTo(X - lean, Y - h * 0.6, X + lean * 0.4, Y - h); ctx.stroke();
+    curl(X + lean * 0.4 + 3 * scaleK, Y - h, 4 * scaleK, 1, 1.1, C.moss3, 1.5);
+    const sides = 1 + Math.floor(hash(seed, 3, 3) * 3);
+    for (let i = 0; i < sides; i++) {
+      const f = 0.35 + i * 0.2, d = i % 2 ? 1 : -1;
+      const bx = X - lean * f * 0.8, by = Y - h * f;
+      ctx.strokeStyle = C.moss2; ctx.lineWidth = px(1);
+      ctx.beginPath(); ctx.moveTo(bx, by); ctx.quadraticCurveTo(bx + d * 4 * scaleK, by - 4 * scaleK, bx + d * 6 * scaleK, by - 2 * scaleK); ctx.stroke();
+      curl(bx + d * 7 * scaleK, by - 2 * scaleK, 2.5 * scaleK, d, 0.9, i % 2 ? C.moss3 : C.cell0);
+    }
+  }
+
+  // Overgrown garden: dark soil, moss, ornamental curl-plants, glowing fungus.
   function floorGarden(tx, ty, t) {
     const n = hash(tx, ty), v = hash(tx, ty, 1);
     diamond(tx, ty, 0);
@@ -2413,6 +2819,9 @@ function createRenderer(canvas) {
       floorBlob(tx + 0.5, ty + 0.5, 0.28, C.void2); // mud
       floorBlob(tx + 0.45, ty + 0.45, 0.12, C.puddle0);
     }
+  }
+  function gardenOrnaments(tx, ty) {
+    if (hash(tx, ty, 77) < 0.09) ornament(tx + 0.3 + hash(tx, ty, 78) * 0.4, ty + 0.3 + hash(tx, ty, 79) * 0.4, tx * 131 + ty);
   }
   function deckGarden(tx, ty) {
     diamond(tx, ty, 0); ctx.fillStyle = C.grime; ctx.fill();
@@ -2803,6 +3212,61 @@ function createRenderer(canvas) {
     }
   }
 
+  // Made-up script: each glyph is a few strokes on a 3 x 4 grid.
+  const GLYPH_STROKES = [[0, 0, 2, 0], [0, 0, 0, 3], [2, 0, 2, 3], [0, 3, 2, 3], [0, 1, 2, 1], [1, 0, 1, 3], [0, 0, 2, 3], [2, 0, 0, 2], [0, 2, 2, 2], [1, 1, 2, 3]];
+  const NEON = () => [C.neon1, C.elec1, C.lamp1];
+  function neonSign(face, tx, ty, t) {
+    const k = face.side === 'y' ? 0 : 50;
+    const color = NEON()[Math.floor(hash(tx, ty, 402 + k) * 3)];
+    const n = 2 + Math.floor(hash(tx, ty, 403 + k) * 3);
+    const u0 = 0.12, u1 = 0.88, v0 = 0.42, v1 = 0.82;
+    faceQuad(face, u0, u1, v0, v1);
+    ctx.fillStyle = C.void0; ctx.fill();
+    const broken = hash(tx, ty, 404 + k) < 0.35; // some tubes buzz on and off
+    const cw = (u1 - u0 - 0.08) / n;
+    ctx.strokeStyle = color; ctx.lineWidth = px(1.2); ctx.lineCap = 'round';
+    let lit = 0;
+    for (let g = 0; g < n; g++) {
+      if (broken && hash(Math.floor(t * 7), tx + g, ty) < 0.3) continue;
+      lit++;
+      ctx.beginPath();
+      const strokes = 2 + Math.floor(hash(tx + g, ty, 405 + k) * 3);
+      for (let i = 0; i < strokes; i++) {
+        const [a, b, c, d] = GLYPH_STROKES[Math.floor(hash(tx * 7 + g, ty * 3 + i, 406 + k) * GLYPH_STROKES.length)];
+        const U = (q) => u0 + 0.04 + g * cw + (q / 2) * cw * 0.7, V = (q) => v1 - 0.06 - (q / 3) * (v1 - v0 - 0.12);
+        ctx.moveTo(...facePoint(face, U(a), V(b))); ctx.lineTo(...facePoint(face, U(c), V(d)));
+      }
+      ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+    if (lit) {
+      const [lx, ly] = facePoint(face, 0.5, (v0 + v1) / 2);
+      lights.push({ x: lx, y: ly + 6, r: 50 + lit * 8, color, glow: 0.22 });
+    }
+  }
+  // Spray-paint: a looping tag with drips.
+  function graffiti(face, tx, ty) {
+    const k = face.side === 'y' ? 0 : 50;
+    const colors = [C.hull1, C.elec0, C.neon0, C.moss3, C.lamp0];
+    const color = colors[Math.floor(hash(tx, ty, 420 + k) * colors.length)];
+    ctx.strokeStyle = color; ctx.lineWidth = px(1.5); ctx.globalAlpha *= 0.8;
+    ctx.beginPath();
+    let u = 0.15 + hash(tx, ty, 421 + k) * 0.1, v = 0.3 + hash(tx, ty, 422 + k) * 0.25;
+    ctx.moveTo(...facePoint(face, u, v));
+    for (let i = 0; i < 4; i++) {
+      const nu = u + 0.15 + hash(tx, ty, 423 + i + k) * 0.08, nv = 0.25 + hash(tx, ty, 430 + i + k) * 0.35;
+      ctx.quadraticCurveTo(...facePoint(face, (u + nu) / 2, nv + 0.25), ...facePoint(face, nu, nv));
+      u = nu;
+    }
+    ctx.stroke();
+    ctx.lineWidth = px(1);
+    for (let i = 0; i < 3; i++) {
+      const du = 0.2 + hash(tx, ty, 440 + i + k) * 0.6, dv = 0.3 + hash(tx, ty, 441 + i + k) * 0.2;
+      ctx.beginPath(); ctx.moveTo(...facePoint(face, du, dv)); ctx.lineTo(...facePoint(face, du, dv - 0.12 - hash(tx, ty, 442 + i) * 0.15)); ctx.stroke();
+    }
+    ctx.globalAlpha /= 0.8;
+  }
+
   function wallTop(tx, ty) { return map.level[ty * map.w + tx] * LEVEL_PX + WALL_H; }
 
   function drawWall(tx, ty, t, alpha = 1) {
@@ -2813,6 +3277,10 @@ function createRenderer(canvas) {
       faceQuad(f, 0, 1, 0, 1);
       ctx.fillStyle = f.side === 'y' ? wc[0] : wc[1]; ctx.fill();
       if (b) decorateWallBiome(b, f, t); else decorateFace(f, t);
+      const k = f.side === 'y' ? 0 : 50;
+      const signs = [0.07, 0.02, 0.07, 0.08, 0.02][b], tags = [0.1, 0.04, 0.06, 0.12, 0][b];
+      if (hash(tx, ty, 400 + k) < signs) neonSign(f, tx, ty, t);
+      else if (hash(tx, ty, 410 + k) < tags) graffiti(f, tx, ty);
     }
     const WALL_H = top; // lift of the top face (shadows the module constant)
     diamond(tx, ty, WALL_H);
@@ -3287,7 +3755,7 @@ function createRenderer(canvas) {
     const { x, y } = rig.pos;
     const dead = !c.alive;
     const z = (dead ? 0.03 : o.bodyHeight * k) + rig.bodyDip;
-    const red = dead ? C.blood0 : C.hot0, dark = C.void1;
+    const red = dead ? C.blood0 : c.elder ? C.blood1 : C.hot0, dark = C.void1;
     const B = (along, side, zz) => P3(x + (cs * along - sn * side) * k, y + (sn * along + cs * side) * k, zz);
     const seg = (along, side, zz, a, b, color) => {
       ellipsePath(x + (cs * along - sn * side) * k, y + (sn * along + cs * side) * k, zz, hd, a * k, b * k);
@@ -3314,7 +3782,11 @@ function createRenderer(canvas) {
     seg(-0.04, 0, z - 0.03 * k, 0.26, 0.14, dark);
     seg(-0.04, 0, z, 0.25, 0.13, red);
     if (!dead) {
-      line([[0.1, 0.05, z + 0.012], [-0.16, 0.06, z + 0.012]], C.hot1, 1.5); // glossy highlight
+      line([[0.1, 0.05, z + 0.012], [-0.16, 0.06, z + 0.012]], c.elder ? C.blood2 : C.hot1, 1.5); // glossy highlight
+      if (c.elder) { // an elder: scarred, with a pale chevron and old wounds
+        line([[0.02, -0.11, z + 0.014], [-0.1, 0, z + 0.014], [0.02, 0.11, z + 0.014]], C.hull2, 1.2);
+        line([[-0.14, -0.08, z + 0.014], [-0.18, -0.02, z + 0.014]], C.void0, 1);
+      }
       // Warning colours should read in the dark: a faint red glow of their own.
       const [gx, gy] = B(0, 0, z);
       lights.push({ x: gx, y: gy, r: 26, color: C.hot0, glow: 0.12 });
@@ -3623,6 +4095,142 @@ function createRenderer(canvas) {
     lights.push({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, r: 40 + charge * 30, color: C.elec1, glow: 0.25 + charge * 0.3 });
   }
 
+  // ---- shelters ----------------------------------------------------------------
+  // A round hatch sunk into the floor with an iris of blades. Open (warm light
+  // inside, a beacon above) when the bug could sleep in it; the iris closes
+  // while it curls up.
+  function drawShelter(h, t, state) {
+    const p = state.player;
+    const X = sx(h.x, h.y), Y = sy(h.x, h.y) - h.z * LEVEL_PX;
+    const ready = p.food >= 4 || (state.cycle.on && state.cycle.phase !== 'clear');
+    const here = Math.hypot(p.x - h.x, p.y - h.y) < 0.5;
+    const close = here ? Math.min(1, p.sleep) : 0;
+    const R = HW * 0.42, r = R * (0.75 - 0.6 * close);
+    // Rim.
+    ctx.fillStyle = C.metal1; ctx.beginPath(); ctx.ellipse(X, Y, R + 4, (R + 4) / 2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = C.metal3; ctx.lineWidth = px(1); ctx.stroke();
+    for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2; ctx.fillStyle = C.metal4; ctx.fillRect(X + Math.cos(a) * (R + 2) - onePx / 2, Y + Math.sin(a) * (R + 2) / 2 - onePx / 2, onePx, onePx); }
+    // Blades.
+    ctx.fillStyle = C.metal2; ctx.beginPath(); ctx.ellipse(X, Y, R, R / 2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = ready ? C.lamp0 : C.void0; ctx.beginPath(); ctx.ellipse(X, Y, r, r / 2, 0, 0, Math.PI * 2); ctx.fill();
+    if (ready) { ctx.fillStyle = C.lamp1; ctx.beginPath(); ctx.ellipse(X, Y, r * 0.5, r * 0.25, 0, 0, Math.PI * 2); ctx.fill(); }
+    ctx.strokeStyle = C.metal0; ctx.lineWidth = px(1);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + close * 1.2;
+      ctx.beginPath(); ctx.moveTo(X + Math.cos(a) * r, Y + Math.sin(a) * r / 2); ctx.lineTo(X + Math.cos(a + 0.9) * R, Y + Math.sin(a + 0.9) * R / 2); ctx.stroke();
+    }
+    // Stripes on the rim so it reads from afar.
+    ctx.strokeStyle = C.lamp0; ctx.lineWidth = px(2);
+    for (const a0 of [0.3, 2.4, 4.4]) { ctx.beginPath(); ctx.ellipse(X, Y, R + 2, (R + 2) / 2, 0, a0, a0 + 0.5); ctx.stroke(); }
+    if (ready) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 2.2);
+      lights.push({ x: X, y: Y - 4, r: 50 + pulse * 14, color: C.lamp1, glow: 0.25 + pulse * 0.15 });
+      // A faint beacon so it can be found in the rain.
+      ctx.globalAlpha = 0.18 + pulse * 0.1; ctx.fillStyle = C.lamp1;
+      ctx.fillRect(X - 1, Y - 120, 2, 116); ctx.globalAlpha = 1;
+    } else lights.push({ x: X, y: Y, r: 22, color: C.lamp0, glow: 0.08 });
+  }
+
+  // ---- gnat nests and gnats ---------------------------------------------------
+  // A nest: a big ornamental curl-plant with a hanging pod the gnats live in.
+  function drawNest(n, t) {
+    const lift = liftAt(n.x, n.y), X = sx(n.x, n.y), Y = sy(n.x, n.y) - lift;
+    const seed = Math.floor(n.x * 31 + n.y * 17);
+    ornament(n.x - 0.15, n.y + 0.1, seed, lift, 1.4);
+    ornament(n.x + 0.15, n.y - 0.1, seed + 5, lift, 1.1);
+    const sway = Math.sin(t * 1.3 + seed) * 2;
+    ctx.strokeStyle = C.moss2; ctx.lineWidth = px(1.5);
+    ctx.beginPath(); ctx.moveTo(X, Y); ctx.quadraticCurveTo(X + 6, Y - 26, X + sway, Y - 34); ctx.stroke();
+    ctx.fillStyle = C.beetleA0; ctx.beginPath(); ctx.ellipse(X + sway, Y - 28, 5, 7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.beetleA1; ctx.beginPath(); ctx.ellipse(X + sway - 1.5, Y - 30, 2, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.void0; ctx.fillRect(X + sway - 1, Y - 24, 2, 2);
+    curl(X + sway, Y - 37, 4, -1, 1.2, C.moss3, 1.5);
+    lights.push({ x: X + sway, y: Y - 26, r: 22, color: C.cell1, glow: 0.1 });
+  }
+  function drawGnat(g, t, alpha) {
+    const x = g.px + (g.x - g.px) * alpha, y = g.py + (g.y - g.py) * alpha, h = (g.ph ?? g.h) + (g.h - (g.ph ?? g.h)) * alpha;
+    const bob = Math.sin(t * 9 + g.id) * 2;
+    const X = sx(x, y), Y = sy(x, y) - h * LEVEL_PX + bob;
+    const flap = Math.floor(t * 30 + g.id) % 2;
+    ctx.fillStyle = C.hull2;
+    if (flap) { ctx.fillRect(X - 5, Y - 3, 4, 2); ctx.fillRect(X + 1, Y - 3, 4, 2); }
+    else { ctx.fillRect(X - 5, Y, 4, 2); ctx.fillRect(X + 1, Y, 4, 2); }
+    ctx.fillStyle = C.limb; ctx.fillRect(X - 1.5, Y - 2, 3, 4);
+    // A glowing tail, brighter on the beat, so prey can be spotted in the dark.
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3 + g.id * 1.7);
+    ctx.fillStyle = pulse > 0.5 ? C.cell2 : C.cell1; ctx.fillRect(X - 1, Y + 2, 2, 2);
+    lights.push({ x: X, y: Y + 2, r: 14 + pulse * 6, color: C.cell1, glow: 0.15 + pulse * 0.15 });
+  }
+
+  // ---- rusted poles with cables between them (decor only) ----------------------
+  const ruin = { map: null, poles: [], cables: [] };
+  function buildRuins(state) {
+    ruin.map = map; ruin.poles = []; ruin.cables = [];
+    const taken = new Set();
+    const mark = (o) => taken.add(Math.floor(o.y) * map.w + Math.floor(o.x));
+    [...state.shards, ...state.vents, ...state.cocoons, ...(state.shelters || []), ...(state.nests || [])].forEach(mark);
+    mark(map.spawn);
+    const density = [0.02, 0.006, 0.03, 0.022, 0.006];
+    for (let ty = 1; ty < map.h - 1; ty++) {
+      for (let tx = 1; tx < map.w - 1; tx++) {
+        const i = ty * map.w + tx;
+        if (map.solid[i] || map.kind[i] || taken.has(i) || hash(tx, ty, 301) >= density[biomeAt(tx, ty)]) continue;
+        ruin.poles.push({ tx, ty, x: tx + 0.25 + hash(tx, ty, 302) * 0.5, y: ty + 0.25 + hash(tx, ty, 303) * 0.5, h: 70 + hash(tx, ty, 304) * 40, lamp: hash(tx, ty, 305) < 0.3 });
+      }
+    }
+    for (const a of ruin.poles) {
+      let best = null, bd = 7;
+      for (const b of ruin.poles) {
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (b !== a && d > 1.5 && d < bd) { best = b; bd = d; }
+      }
+      if (best && !ruin.cables.some((c) => c.a === best && c.b === a)) ruin.cables.push({ a, b: best, sag: 14 + hash(a.tx, a.ty, 306) * 20 });
+    }
+  }
+  const poleTop = (q) => [sx(q.x, q.y), sy(q.x, q.y) - liftAt(q.x, q.y) - q.h];
+  function drawPole(q, t) {
+    const X = sx(q.x, q.y), Y = sy(q.x, q.y) - liftAt(q.x, q.y), top = Y - q.h;
+    ctx.fillStyle = C.rust0; ctx.fillRect(X - 1.5, top, 3, q.h);
+    ctx.fillStyle = C.rust1; ctx.fillRect(X - 1.5, top, 1, q.h);
+    ctx.fillStyle = C.void1; ctx.fillRect(X - 3, Y - 3, 6, 3); // foot plate
+    ctx.fillStyle = C.rust0; ctx.fillRect(X - 9, top + 6, 18, 2); // crossbar
+    ctx.fillStyle = C.rust2; ctx.fillRect(X - 9, top + 6, 18, 1);
+    for (const d of [-8, 7]) { ctx.fillStyle = C.metal3; ctx.fillRect(X + d, top + 3, 1, 3); } // insulators
+    if (q.lamp) {
+      const on = hash(Math.floor(t * 5), q.tx, q.ty) > 0.15;
+      ctx.fillStyle = on ? C.lamp1 : C.lamp0; ctx.fillRect(X + 2, top + 10, 3, 3);
+      if (on) lights.push({ x: X + 3, y: top + 11, r: 70, color: C.lamp1, glow: 0.2 });
+    }
+  }
+  function drawCables(onScreenXY) {
+    ctx.strokeStyle = C.limb; ctx.lineWidth = px(1);
+    for (const c of ruin.cables) {
+      const [ax, ay] = poleTop(c.a), [bx, by] = poleTop(c.b);
+      if (!onScreenXY(ax, ay) && !onScreenXY(bx, by)) continue;
+      const mx = (ax + bx) / 2, my = (ay + by) / 2 + c.sag;
+      for (const d of [-8, 7]) {
+        ctx.beginPath(); ctx.moveTo(ax + d, ay + 3); ctx.quadraticCurveTo(mx + d, my + 3, bx + d, by + 3); ctx.stroke();
+      }
+    }
+  }
+
+  // Noise ripples and other short floor rings.
+  function noiseRing(x, y, r) { fx.rings.push({ x, y, z: lvAt(x, y), r: Math.min(r, 4), life: 1 }); }
+  function drawRings(dt) {
+    for (const q of fx.rings) {
+      q.life -= dt * 1.4;
+      const k = 1 - q.life, R = q.r * k;
+      ctx.globalAlpha = Math.max(0, q.life) * 0.35; ctx.strokeStyle = C.metal4; ctx.lineWidth = px(1);
+      ctx.beginPath(); ctx.ellipse(sx(q.x, q.y), sy(q.x, q.y) - q.z * LEVEL_PX, R * HW * Math.SQRT2 * 0.7, R * HH * Math.SQRT2 * 0.7, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    fx.rings = fx.rings.filter((q) => q.life > 0);
+  }
+  function eatFx(x, y, z) {
+    const X = sx(x, y), Y = sy(x, y) - (z ?? lvAt(x, y)) * LEVEL_PX;
+    for (let i = 0; i < 6; i++) fx.particles.push({ x: X, y: Y, vx: (Math.random() - 0.5) * 60, vy: -20 - Math.random() * 30, life: 1, fade: 2.5, grav: 80, color: i % 2 ? C.cell1 : C.metal4, size: 2 });
+  }
+
   // ---- vents ---------------------------------------------------------------
   function drawVent(v, t, dt) {
     const tx = Math.floor(v.x), ty = Math.floor(v.y);
@@ -3803,21 +4411,50 @@ function createRenderer(canvas) {
     }
   }
 
-  function rain(lw, lh, amount, dt) {
-    const want = Math.round(amount * (lw * lh) / 900);
+  // Rain follows the cycle: drizzle when clear, heavier in the warning, and
+  // in the downpour dense slanted streaks, sheets of water and splashes.
+  function rain(lw, lh, amount, dt, storm = 0) {
+    const want = Math.round(amount * (0.35 + storm * 3) * (lw * lh) / 900);
+    const slant = 0.25 + storm * 0.35, speed = 1 + storm * 1.6, len = 1 + storm * 3;
     while (fx.drops.length < want) {
-      fx.drops.push({ x: Math.random() * (lw + 40), y: Math.random() * lh, v: 160 + Math.random() * 120, len: 2 + Math.random() * 3 });
+      fx.drops.push({ x: Math.random() * (lw + 80), y: Math.random() * lh, v: 160 + Math.random() * 120, len: 2 + Math.random() * 3 });
     }
     fx.drops.length = Math.min(fx.drops.length, want);
     ctx.strokeStyle = C.metal3; ctx.lineWidth = 1;
     ctx.beginPath();
     for (const d of fx.drops) {
-      d.y += d.v * dt; d.x -= d.v * 0.25 * dt;
-      if (d.y > lh || d.x < -4) { d.y = -5; d.x = Math.random() * (lw + 40); }
+      d.y += d.v * speed * dt; d.x -= d.v * speed * slant * dt;
+      if (d.y > lh || d.x < -8) {
+        if (storm > 0.3 && Math.random() < storm) fx.splashes.push({ x: d.x, y: Math.min(d.y, lh - 2), life: 1 });
+        d.y = -5; d.x = Math.random() * (lw + 80);
+      }
       ctx.moveTo(Math.round(d.x), Math.round(d.y));
-      ctx.lineTo(Math.round(d.x + d.len * 0.25), Math.round(d.y - d.len));
+      ctx.lineTo(Math.round(d.x + d.len * len * slant), Math.round(d.y - d.len * len));
     }
     ctx.stroke();
+    if (storm > 0.3) {
+      // Splashes across the ground, not only where streaks end.
+      for (let i = 0; i < storm * 6; i++) fx.splashes.push({ x: Math.random() * lw, y: Math.random() * lh, life: 1 });
+      ctx.fillStyle = C.metal4;
+      for (const q of fx.splashes) {
+        q.life -= dt * 6;
+        ctx.globalAlpha = Math.max(0, q.life) * 0.7;
+        ctx.fillRect(Math.round(q.x) - 1, Math.round(q.y), 1, 1); ctx.fillRect(Math.round(q.x) + 1, Math.round(q.y), 1, 1);
+        ctx.fillRect(Math.round(q.x), Math.round(q.y) - 1, 1, 1);
+      }
+      ctx.globalAlpha = 1;
+      fx.splashes = fx.splashes.filter((q) => q.life > 0);
+    } else fx.splashes.length = 0;
+    if (storm >= 0.99) {
+      // Sheets of water sweeping across.
+      while (fx.sheets.length < 4) fx.sheets.push({ x: Math.random() * lw, w: 10 + Math.random() * 30, v: 20 + Math.random() * 40 });
+      ctx.fillStyle = C.metal3;
+      for (const q of fx.sheets) {
+        q.x -= q.v * dt; if (q.x < -q.w) { q.x = lw + Math.random() * 40; q.w = 10 + Math.random() * 30; }
+        ctx.globalAlpha = 0.07; ctx.fillRect(Math.round(q.x), 0, Math.round(q.w), lh);
+      }
+      ctx.globalAlpha = 1;
+    } else fx.sheets.length = 0;
   }
 
   // ---- frame ---------------------------------------------------------------
@@ -3906,6 +4543,7 @@ function createRenderer(canvas) {
       }
     }
     for (const v of state.vents) if (ground(Math.floor(v.x), Math.floor(v.y))) drawVent(v, t, dt);
+    for (const hs of state.shelters || []) if (ground(Math.floor(hs.x), Math.floor(hs.y)) && onScreen(Math.floor(hs.x), Math.floor(hs.y))) drawShelter(hs, t, state);
     ctx.fillStyle = SHADOW;
     for (const sh of shadows) if (sh.gz < 0.05 && ground(Math.floor(sh.x), Math.floor(sh.y))) { sh.draw(); }
 
@@ -3936,6 +4574,10 @@ function createRenderer(canvas) {
       const tx = Math.floor(v.x), ty = Math.floor(v.y);
       if (!ground(tx, ty)) items.push({ d: tx + ty + 1, k: 0.5, v });
     }
+    for (const hs of state.shelters || []) {
+      const tx = Math.floor(hs.x), ty = Math.floor(hs.y);
+      if (!ground(tx, ty)) items.push({ d: tx + ty + 1, k: 0.6, shelter: hs });
+    }
     // Something standing on a column draws after it. With nothing taller just
     // in front, it also draws after its same-height neighbours, so its legs
     // aren't cut off by the next tile of the same floor.
@@ -3950,6 +4592,10 @@ function createRenderer(canvas) {
       return taller ? d : Math.max(d, tx + ty + 1.6);
     };
     for (const s of state.shards) if (!s.taken) items.push({ d: standDepth(s.x, s.y), k: 1, s });
+    if (ruin.map !== map) buildRuins(state);
+    for (const q of ruin.poles) if (onScreen(q.tx, q.ty, q.h)) items.push({ d: standDepth(q.x, q.y), k: 1.1, pole: q });
+    for (const n of state.nests || []) if (onScreen(Math.floor(n.x), Math.floor(n.y), 60)) items.push({ d: standDepth(n.x, n.y), k: 1.05, nest: n });
+    for (const g of state.gnats || []) if (onScreen(Math.floor(g.x), Math.floor(g.y), 40)) items.push({ d: standDepth(g.x, g.y) + 0.2, k: 5, gnat: g });
     for (const c of state.critters) {
       const rig = rigs.critters.get(c.id);
       if (rig) items.push({ d: standDepth(rig.pos.x, rig.pos.y) - (c.alive ? 0 : 0.01), k: 3, rig, i: c.id, c });
@@ -3971,6 +4617,10 @@ function createRenderer(canvas) {
         if (map.solid[it.ty * map.w + it.tx]) drawWall(it.tx, it.ty, t, fade ? 0.35 : 1);
         else drawColumn(it.tx, it.ty, t, fade ? 0.35 : 1);
       } else if (it.k === 0.5) drawVent(it.v, t, dt);
+      else if (it.k === 0.6) drawShelter(it.shelter, t, state);
+      else if (it.k === 1.1) drawPole(it.pole, t);
+      else if (it.k === 1.05) drawNest(it.nest, t);
+      else if (it.k === 5) drawGnat(it.gnat, t, view.alpha ?? 1);
       else if (it.k === 1) drawCell(it.s, t);
       else if (it.k === 1.5) drawBall(it.b, rigs.ballRadius || 0.32, it.bz);
       else if (it.k === 1.2) drawCocoon(it.cocoon, t, state);
@@ -4005,6 +4655,8 @@ function createRenderer(canvas) {
     }
 
     drawSplats(dt);
+    drawRings(dt);
+    drawCables((X, Y) => X > camX - halfW && X < camX + halfW && Y > camY - halfH - 40 && Y < camY + halfH + 40);
     for (const [id, tt] of cocoonHits) cocoonHits.set(id, tt + dt);
 
     for (const q of fx.particles) {
@@ -4017,14 +4669,29 @@ function createRenderer(canvas) {
 
     // Rain falls in screen space, before lighting, so it shows near lights.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    if (look.rain > 0) rain(lw, lh, look.rain, Math.min(dt, 0.05));
+    const storm = rainLevel(state);
+    if (look.rain > 0) rain(lw, lh, look.rain, Math.min(dt, 0.05), storm);
+
+    // Colour grade: a light biome tint over everything, eased as you walk, so
+    // each region keeps a few flat colours that carry light and distance.
+    {
+      const pb = biomeAt(Math.max(0, Math.min(map.w - 1, Math.floor(p.x))), Math.max(0, Math.min(map.h - 1, Math.floor(p.y))));
+      const want = [[74, 90, 102], [93, 110, 58], [138, 90, 42], [47, 90, 102], [110, 42, 48]][pb];
+      const e = Math.min(1, dt * 1.5);
+      grade.r += (want[0] - grade.r) * e; grade.g += (want[1] - grade.g) * e; grade.b += (want[2] - grade.b) * e;
+      ctx.globalCompositeOperation = 'soft-light';
+      ctx.fillStyle = `rgba(${grade.r | 0},${grade.g | 0},${grade.b | 0},${0.35 + storm * 0.2})`;
+      ctx.fillRect(0, 0, lw, lh);
+      ctx.globalCompositeOperation = 'source-over';
+    }
 
     // Lighting: darken everything, then cut holes where lights are and add a glow.
-    if (look.darkness > 0) {
+    const dark = Math.min(0.9, look.darkness + storm * 0.22);
+    if (dark > 0) {
       lctx.setTransform(1, 0, 0, 1, 0, 0);
       lctx.globalCompositeOperation = 'source-over';
       lctx.clearRect(0, 0, lw, lh);
-      lctx.fillStyle = `rgba(4,6,8,${look.darkness})`;
+      lctx.fillStyle = `rgba(4,6,8,${dark})`;
       lctx.fillRect(0, 0, lw, lh);
       lctx.globalCompositeOperation = 'destination-out';
       for (const L of lights) {
@@ -4045,6 +4712,23 @@ function createRenderer(canvas) {
     }
     ctx.globalCompositeOperation = 'source-over';
 
+    // The downpour stays visible over the darkness: a second, brighter veil.
+    if (storm > 0.05 && look.rain > 0) {
+      ctx.strokeStyle = C.metal4; ctx.lineWidth = 1; ctx.globalAlpha = Math.min(0.6, storm * 0.6);
+      ctx.beginPath();
+      const slant = 0.25 + storm * 0.35, len = 1 + storm * 3;
+      for (let i = 0; i < fx.drops.length; i += 2) {
+        const d = fx.drops[i];
+        ctx.moveTo(Math.round(d.x), Math.round(d.y)); ctx.lineTo(Math.round(d.x + d.len * len * slant), Math.round(d.y - d.len * len));
+      }
+      ctx.stroke();
+      if (storm >= 0.99) {
+        ctx.fillStyle = C.metal3;
+        for (const q of fx.sheets) { ctx.globalAlpha = 0.1; ctx.fillRect(Math.round(q.x), 0, Math.round(q.w), lh); }
+      }
+      ctx.globalAlpha = 1;
+    }
+
     if (look.palette) {
       const img = ctx.getImageData(0, 0, lw, lh);
       quantize(img.data, lw, lh, table, look.dither);
@@ -4057,7 +4741,7 @@ function createRenderer(canvas) {
   }
 
   return {
-    resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals,
+    resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals, noiseRing, eatFx,
     dust, cocoonBurst, muzzle, webSplat, webTorn, cocoonHit,
     ventPuff: (v) => ventPuff(v, 14),
     renderPreview,
@@ -4066,6 +4750,212 @@ function createRenderer(canvas) {
     screenOf: (x, y, z) => ({ x: sx(x, y), y: sy(x, y) - (z ?? lvAt(x, y)) * LEVEL_PX }),
     get size() { return { w, h }; },
   };
+}
+
+// Minimap: the arena seen from the same isometric angle, one tile per pixel,
+// with shelters, nests, cells and the bug marked.
+function createMinimap(canvas) {
+  const g = canvas.getContext('2d');
+  const base = document.createElement('canvas');
+  let baseMap = null;
+  const BIOME_RGB = [[60, 72, 80], [58, 74, 44], [92, 64, 40], [40, 64, 74], [84, 40, 46]];
+  function bake(map) {
+    base.width = map.w; base.height = map.h;
+    const bctx = base.getContext('2d'), img = bctx.createImageData(map.w, map.h);
+    for (let i = 0; i < map.w * map.h; i++) {
+      const [r, gg, b] = BIOME_RGB[map.biome ? map.biome[i] : 0];
+      const k = map.solid[i] ? 0.35 : 1 + map.level[i] * 0.35 + (map.kind[i] ? 0.15 : 0);
+      img.data.set([Math.min(255, r * k), Math.min(255, gg * k), Math.min(255, b * k), 255], i * 4);
+    }
+    bctx.putImageData(img, 0, 0);
+    baseMap = map;
+  }
+  function draw(state, t, storm) {
+    const map = state.map;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const W = Math.round(canvas.clientWidth * dpr), H = Math.round(canvas.clientHeight * dpr);
+    if (!W || !H) return;
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    if (baseMap !== map) bake(map);
+    const k = Math.min(W / (map.w + map.h), (H * 2) / (map.w + map.h));
+    const ox = W / 2 - ((map.w - map.h) / 2) * k, oy = H / 2 - ((map.w + map.h) / 4) * k;
+    const P = (x, y) => [ox + (x - y) * k, oy + ((x + y) * k) / 2];
+    g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, W, H);
+    g.imageSmoothingEnabled = false;
+    g.setTransform(k, k / 2, -k, k / 2, ox, oy);
+    g.drawImage(base, 0, 0);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    if (storm > 0) {
+      g.globalCompositeOperation = 'source-atop';
+      g.fillStyle = `rgba(47,166,200,${storm * 0.25})`; g.fillRect(0, 0, W, H);
+      g.globalCompositeOperation = 'source-over';
+    }
+    const dot = (x, y, r, color) => { const [X, Y] = P(x, y); g.fillStyle = color; g.fillRect(Math.round(X - r), Math.round(Y - r), r * 2, r * 2); };
+    const s = Math.max(1, Math.round(dpr));
+    for (const c of state.shards) if (!c.taken) dot(c.x, c.y, s, c.big ? '#b8262a' : '#c8d43c');
+    for (const n of state.nests || []) dot(n.x, n.y, s, '#6e7f45');
+    for (const h of state.shelters || []) { dot(h.x, h.y, 2 * s, '#0b0d10'); dot(h.x, h.y, s, '#f2c15a'); }
+    if (Math.floor(t * 3) % 2 === 0) dot(state.player.x, state.player.y, 2 * s, '#d2fbff');
+  }
+  return { draw };
+}
+
+// ---- src/audio.js
+// Sound: a layered threat score and rain, all synthesized with Web Audio.
+// Browser only (not part of the pure simulation). Eight layers fade in one by
+// one as threat rises; each picks a new pattern from a small pool every bar,
+// so it doesn't loop. Each biome has its own root note and scale. The rain is
+// filtered noise that swells with the cycle, plus a low rumble and a slow,
+// pitched-down organ chord in the downpour. Percussion is "junk audio": noise
+// bursts through resonant filters, like slapping a ruler on a table.
+
+// Root (Hz) and scale (semitones) per biome: yard, garden, foundry, drains, hive.
+const AUDIO_BIOMES = [
+  { root: 55, scale: [0, 3, 5, 7, 10] },
+  { root: 61.7, scale: [0, 2, 3, 7, 9] },
+  { root: 49, scale: [0, 1, 5, 7, 8] },
+  { root: 58.3, scale: [0, 3, 7, 10, 14] },
+  { root: 46.2, scale: [0, 1, 4, 6, 7] },
+];
+const LAYERS = 8;
+const BPM = 96;
+
+function createAudio() {
+  let ac = null, master, layerGain = [], rainGain, rumbleGain, organGain, organOscs = [];
+  let noiseBuf = null, muted = false, nextStep = 0, stepIx = 0;
+  const patterns = Array(LAYERS).fill(null);
+  let biome = 0, threat = 0, rain = 0;
+  const level = Array(LAYERS).fill(0);
+
+  const pick = (pool) => pool[Math.floor(Math.random() * pool.length)];
+  const freq = (deg, oct = 0) => {
+    const b = AUDIO_BIOMES[biome], n = b.scale.length;
+    const s = b.scale[((deg % n) + n) % n] + 12 * (oct + Math.floor(deg / n));
+    return b.root * 2 ** (s / 12);
+  };
+
+  function start() {
+    if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    ac = new AC();
+    master = ac.createGain(); master.gain.value = muted ? 0 : 0.5;
+    const comp = ac.createDynamicsCompressor();
+    master.connect(comp); comp.connect(ac.destination);
+    noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    for (let i = 0; i < LAYERS; i++) { const g = ac.createGain(); g.gain.value = 0; g.connect(master); layerGain.push(g); }
+    // Layer 0: an always-on drone.
+    for (const det of [-6, 5]) {
+      const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = freq(0, -1); o.detune.value = det;
+      const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 240;
+      o.connect(f); f.connect(layerGain[0]); o.start();
+      organOscs.push({ o, base: 0, oct: -1 });
+    }
+    // Rain: band-passed noise, plus a low rumble.
+    const loop = (type, fq, q) => {
+      const src = ac.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+      const f = ac.createBiquadFilter(); f.type = type; f.frequency.value = fq; f.Q.value = q;
+      const g = ac.createGain(); g.gain.value = 0;
+      src.connect(f); f.connect(g); g.connect(master); src.start();
+      return g;
+    };
+    rainGain = loop('bandpass', 2400, 0.4);
+    rumbleGain = loop('lowpass', 180, 0.7);
+    // Organ for the downpour: detuned, pitched-down sines, slowly swelling.
+    organGain = ac.createGain(); organGain.gain.value = 0; organGain.connect(master);
+    for (const [deg, det] of [[0, -9], [2, 7], [4, -4], [0, 12]]) {
+      const o = ac.createOscillator(); o.type = 'sine'; o.frequency.value = freq(deg, 0) * 0.98; o.detune.value = det;
+      const ws = ac.createWaveShaper(); ws.curve = distortion(8);
+      o.connect(ws); ws.connect(organGain); o.start();
+      organOscs.push({ o, base: deg, oct: 0, organ: true });
+    }
+    nextStep = ac.currentTime + 0.1;
+  }
+
+  function distortion(k) {
+    const n = 256, c = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = (i / (n - 1)) * 2 - 1; c[i] = ((1 + k) * x) / (1 + k * Math.abs(x)); }
+    return c;
+  }
+
+  // ---- instruments ----
+  function noiseHit(t, out, { type = 'bandpass', f = 2000, q = 8, dur = 0.08, gain = 0.5 }) {
+    const src = ac.createBufferSource(); src.buffer = noiseBuf;
+    src.playbackRate.value = 0.8 + Math.random() * 0.4;
+    const fl = ac.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q;
+    const g = ac.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(fl); fl.connect(g); g.connect(out); src.start(t, Math.random()); src.stop(t + dur + 0.02);
+  }
+  function tone(t, out, { f, type = 'square', dur = 0.15, gain = 0.2, cut = 900, bend = 1 }) {
+    const o = ac.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t);
+    if (bend !== 1) o.frequency.exponentialRampToValueAtTime(f * bend, t + dur);
+    const fl = ac.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = cut;
+    const g = ac.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(fl); fl.connect(g); g.connect(out); o.start(t); o.stop(t + dur + 0.02);
+  }
+
+  // Pattern pools: 16 sixteenth steps; numbers are scale degrees (or 1 = hit).
+  const POOLS = [
+    null, // drone runs continuously
+    [[1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0]], // sub pulse
+    [[0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1], [1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0]], // ticks
+    [[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1], [0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0]], // junk clanks
+    [[0, -1, -1, 0, -1, -1, 3, -1, 0, -1, -1, 2, -1, -1, 1, -1], [0, -1, 0, -1, 4, -1, -1, 3, -1, -1, 0, -1, 2, -1, -1, -1]], // bass
+    [[0, 2, 4, 2, 5, 4, 2, 4, 0, 2, 4, 7, 5, 4, 2, 1], [4, -1, 2, -1, 0, -1, 2, 3, 4, -1, 5, -1, 4, -1, 2, -1]], // arpeggio
+    [[-1, -1, -1, 9, -1, -1, -1, -1, -1, -1, 7, -1, -1, -1, -1, -1], [-1, 8, -1, -1, -1, -1, -1, 6, -1, -1, -1, -1, 10, -1, -1, -1]], // pings
+    [[0, -1, -1, -1, -1, -1, -1, -1, 3, -1, -1, -1, -1, -1, -1, -1]], // organ stabs
+  ];
+
+  function schedule() {
+    const stepDur = 60 / BPM / 4;
+    while (nextStep < ac.currentTime + 0.15) {
+      const t = nextStep, i = stepIx % 16;
+      if (i === 0) for (let l = 1; l < LAYERS; l++) patterns[l] = pick(POOLS[l]);
+      for (let l = 1; l < LAYERS; l++) {
+        if (level[l] < 0.02) continue;
+        const v = patterns[l][i], out = layerGain[l];
+        if (l === 1 && v) tone(t, out, { f: freq(0, -1) * 1.0, type: 'sine', dur: 0.35, gain: 0.8, cut: 200, bend: 0.5 });
+        if (l === 2 && v) noiseHit(t, out, { type: 'highpass', f: 6000, q: 1, dur: 0.03, gain: 0.25 });
+        if (l === 3 && v) noiseHit(t, out, { f: 300 + Math.random() * 1800, q: 25, dur: 0.18, gain: 0.9 });
+        if (l === 4 && v >= 0) tone(t, out, { f: freq(v, 0), dur: 0.22, gain: 0.25, cut: 500 });
+        if (l === 5 && v >= 0) tone(t, out, { f: freq(v, 2), type: 'triangle', dur: 0.12, gain: 0.12, cut: 3000 });
+        if (l === 6 && v >= 0) tone(t, out, { f: freq(v, 3), type: 'sine', dur: 0.6, gain: 0.08, cut: 6000 });
+        if (l === 7 && v >= 0) tone(t, out, { f: freq(v, 1), type: 'sawtooth', dur: 0.9, gain: 0.12, cut: 1200 });
+      }
+      nextStep += stepDur; stepIx++;
+    }
+  }
+
+  function update(dt, opts) {
+    if (!ac) return;
+    threat = opts.threat; rain = opts.rain;
+    if (opts.biome !== biome) {
+      biome = opts.biome;
+      for (const q of organOscs) q.o.frequency.setTargetAtTime(freq(q.base, q.oct) * (q.organ ? 0.98 : 1), ac.currentTime, 0.8);
+    }
+    // Layer l comes in once threat passes l / LAYERS; the drone is always there.
+    for (let l = 0; l < LAYERS; l++) {
+      const want = l === 0 ? 0.08 + threat * 0.1 : Math.max(0, Math.min(1, (threat * LAYERS - l + 1)));
+      level[l] += (want - level[l]) * Math.min(1, dt * 2);
+      layerGain[l].gain.setTargetAtTime(level[l] * (l === 0 ? 1 : 0.6), ac.currentTime, 0.1);
+    }
+    const now = ac.currentTime;
+    rainGain.gain.setTargetAtTime(0.03 + rain * 0.35, now, 0.5);
+    rumbleGain.gain.setTargetAtTime(rain >= 0.99 ? 0.5 : rain * 0.15, now, 0.8);
+    organGain.gain.setTargetAtTime(rain >= 0.99 ? 0.05 : 0, now, 2);
+    schedule();
+  }
+
+  function toggle() {
+    muted = !muted;
+    if (master) master.gain.setTargetAtTime(muted ? 0 : 0.5, ac.currentTime, 0.05);
+    return muted;
+  }
+
+  return { start, update, toggle, get muted() { return muted; } };
 }
 
 // ---- src/main.js
@@ -4155,7 +5045,8 @@ function start(snapshot) {
     for (const c of state.critters) {
       ids.add(c.id);
       if (!rigs.critters.has(c.id)) {
-        const rig = createRig(c.x, c.y, Math.atan2(c.dirY, c.dirX) || c.id * 1.3, c.type === 'spider' ? SPIDER_RIG : STAINER_RIG);
+        const kind = c.type === 'spider' ? SPIDER_RIG : STAINER_RIG;
+        const rig = createRig(c.x, c.y, Math.atan2(c.dirY, c.dirX) || c.id * 1.3, c.elder ? { ...kind, scale: kind.scale * 1.25 } : kind);
         rig.zLevel = c.z;
         rigs.critters.set(c.id, rig);
       }
@@ -4164,6 +5055,10 @@ function start(snapshot) {
   }
   makeRigs();
   let shake = 0, vitalsFlash = 0;
+  let sleepPause = 0; // s the sleep screen holds the game still
+  const audio = createAudio();
+  const minimap = createMinimap($('minimap'));
+  let showMap = true;
   const vitals = createVitals($('vitals'));
   let started = false;
 
@@ -4177,6 +5072,7 @@ function start(snapshot) {
     centreCamera();
     $('win').hidden = true;
     $('dead').hidden = true;
+    $('sleep').hidden = true; sleepPause = 0;
   }
 
   // ---- input -------------------------------------------------------------
@@ -4294,7 +5190,12 @@ function start(snapshot) {
     }
     if (e.code === 'KeyR') { restart(); begin(); }
     if (e.code === 'KeyT') togglePanel();
+    if (e.code === 'KeyM') { showMap = !showMap; $('minimap').hidden = !showMap; }
+    if (e.code === 'KeyN') flash(audio.toggle() ? 'Sound off (N)' : 'Sound on (N)');
   });
+  // Audio may only start after a user gesture.
+  window.addEventListener('pointerdown', () => audio.start());
+  window.addEventListener('keydown', () => audio.start());
   window.addEventListener('keyup', (e) => { if (KEYMAP[e.code]) keys.delete(KEYMAP[e.code]); });
   window.addEventListener('blur', () => keys.clear());
 
@@ -4494,7 +5395,7 @@ function start(snapshot) {
   }
 
   // ---- HUD ---------------------------------------------------------------
-  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudKills = $('hud-kills'), capHp = $('cap-hp'), capCh = $('cap-ch'), hudBpmLabel = $('hud-bpm-label'), hudBiome = $('hud-biome');
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudKills = $('hud-kills'), capHp = $('cap-hp'), capCh = $('cap-ch'), hudBpmLabel = $('hud-bpm-label'), hudBiome = $('hud-biome'), hudFood = $('food'), hudRain = $('raintimer'), hudCycle = $('cycle-label');
   const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
   function updateHud() {
     hudShards.textContent = `${state.collected} / ${state.shards.length}`;
@@ -4517,6 +5418,32 @@ function start(snapshot) {
     const bk = m.biome && bx >= 0 && by >= 0 && bx < m.w && by < m.h ? BIOME_KEYS[m.biome[by * m.w + bx]] : 'y';
     const label = `Prototype 0.9 · ${BIOMES[bk]?.name ?? ''}`;
     if (hudBiome.textContent !== label) hudBiome.textContent = label;
+    // Food pips with a bar at the quota, and the rain timer.
+    const food = `${pl.food}/${params.foodQuota}/${params.maxFood}`;
+    if (hudFood.dataset.v !== food) {
+      hudFood.dataset.v = food;
+      hudFood.innerHTML = '';
+      for (let i = 0; i < params.maxFood; i++) {
+        if (i === params.foodQuota) hudFood.appendChild(document.createElement('b'));
+        const pip = document.createElement('i');
+        if (i < pl.food) pip.className = 'full';
+        hudFood.appendChild(pip);
+      }
+    }
+    const cy = state.cycle;
+    $('cycle').hidden = !cy.on;
+    if (cy.on) {
+      const N = 30, left = Math.max(0, Math.ceil((1 - cy.t / cy.len) * N));
+      const key = `${left}/${cy.phase}`;
+      if (hudRain.dataset.v !== key) {
+        hudRain.dataset.v = key;
+        hudRain.className = cy.phase === 'warning' ? 'warn' : cy.phase === 'rain' ? 'rain' : '';
+        hudRain.innerHTML = '';
+        for (let i = 0; i < N; i++) { const d = document.createElement('i'); if (i >= left && cy.phase !== 'rain') d.className = 'gone'; hudRain.appendChild(d); }
+      }
+      const cl = `Cycle ${cy.n}`;
+      if (hudCycle.textContent !== cl) hudCycle.textContent = cl;
+    }
   }
   function onWin() {
     const name = LEVELS[levelIndex].name;
@@ -4529,9 +5456,17 @@ function start(snapshot) {
   }
   $('again').addEventListener('click', () => { restart(); begin(); });
   $('again-dead').addEventListener('click', () => { restart(); begin(); });
-  function onDeath() {
+  function onSleep(e) {
+    $('sleep-title').textContent = `Cycle ${e.cycle}`;
+    $('sleep-text').textContent = e.fed ? 'Slept well. Health restored.' : 'Slept hungry. Find gnats to eat.';
+    $('sleep').hidden = false; $('sleep').style.opacity = 1;
+    sleepPause = 2.4;
+    centreCamera();
+  }
+  function onDeath(e = {}) {
+    $('dead').querySelector('h2').textContent = e.cause === 'rain' ? 'Washed away' : 'Signal lost';
     $('dead-time').textContent = fmtTime(state.time);
-    $('dead-stats').textContent = `${state.collected} of ${state.shards.length} cells, ${state.kills} spiders killed.`;
+    $('dead-stats').textContent = `${state.collected} of ${state.shards.length} cells, ${state.kills} killed, ${state.cycle.n - 1} cycles survived.`;
     $('dead').hidden = false;
   }
 
@@ -4557,8 +5492,18 @@ function start(snapshot) {
       else if (e.type === 'webbed') shake = Math.max(shake, 0.08);
       else if (e.type === 'spawn') renderer.ventPuff({ x: e.x, y: e.y });
       else if (e.type === 'corpse') renderer.bakeHusk(state.map, e.x, e.y);
+      else if (e.type === 'eat') renderer.eatFx(e.x, e.y, e.z);
+      else if (e.type === 'noise') renderer.noiseRing(e.x, e.y, e.r);
+      else if (e.type === 'rainHit') { renderer.hitFx(ix, iy); shake = Math.max(shake, 0.2); vitalsFlash = 0.2; }
+      else if (e.type === 'elderHit') { renderer.splat(e.x, e.y); shake = Math.max(shake, 0.1); }
+      else if (e.type === 'burrow') renderer.ventPuff({ x: e.x, y: e.y });
+      else if (e.type === 'phase') {
+        if (e.phase === 'warning') flash('The rain is coming. Find a shelter hatch.');
+        else if (e.phase === 'rain') flash('Downpour. Get under cover.');
+      }
+      else if (e.type === 'sleep') onSleep(e);
       else if (e.type === 'win') onWin();
-      else if (e.type === 'death') onDeath();
+      else if (e.type === 'death') onDeath(e);
     }
     state.events.length = 0;
   }
@@ -4581,7 +5526,12 @@ function start(snapshot) {
     last = now;
     clock += dt;
     if (menuOpen) animatePreviews(dt, clock);
-    if (started && !menuOpen) {
+    if (sleepPause > 0) {
+      sleepPause -= dt;
+      $('sleep').style.opacity = Math.min(1, sleepPause / 0.6);
+      if (sleepPause <= 0) $('sleep').hidden = true;
+    }
+    if (started && !menuOpen && sleepPause <= 0) {
       acc += dt;
       let input = readInput();
       const sp = simParams();
@@ -4627,10 +5577,18 @@ function start(snapshot) {
     view.camX += (target.x - view.camX) * k;
     view.camY += (target.y - 10 - view.camY) * k;
     const fit = Math.min(renderer.size.w, renderer.size.h) / 560;
+    const storm = rainLevel(state);
+    if (storm >= 0.99 && started) shake = Math.max(shake, 0.03); // the downpour hammers everything
     shake = Math.max(0, shake - dt);
     const jolt = shake > 0 ? Math.sin(clock * 90) * 4 * (shake / 0.25) : 0;
     renderer.draw(state, { ...view, camX: view.camX + jolt, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, rigs, clock, look, dt);
     updateHud();
+    if (showMap) minimap.draw(state, clock, storm);
+    {
+      const m = state.map, bx = Math.floor(p.x), by = Math.floor(p.y);
+      const bi = m.biome && bx >= 0 && by >= 0 && bx < m.w && by < m.h ? m.biome[by * m.w + bx] : 0;
+      audio.update(dt, { threat: started ? threatLevel(state, simParams()) : 0, rain: storm, biome: bi });
+    }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);

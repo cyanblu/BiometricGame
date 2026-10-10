@@ -378,7 +378,8 @@ red glow of their own so the warning colours read in the dark.
 The simulation appends events to `state.events` (`spawn`, `kill` with the dash
 direction, `hit`, `pickup`, `corpse`, `death`, `win`, `land` with height,
 `kick`, `shoot`, `webbed`, `webTorn`, `webFree`, `webSplat`, `cocoon`,
-`spiderDrop`). The browser drains them
+`cocoonHit`, `spiderDrop`, `rainHit`, `sleep`, `eat`, `noise`, `burrow`,
+`elderHit`, `phase`). The browser drains them
 each frame for effects. Simulation logic never reads them.
 
 ## HUD: vitals panel
@@ -429,6 +430,20 @@ onto walls). Splatters and husks stay on the floor for the rest of the run.
    head lamp and body glow), plus a coloured additive glow.
 4. Rain in screen space, drawn before lighting so it shows near lights.
 5. Look settings are tunable: art pixel size, dither, darkness, rain, palette on/off.
+6. Rain World-like grading: few flat colours that mostly carry light and
+   distance. Lower floors sink into a biome-tinted fog (level 0 most, level 2
+   none) and the whole frame gets a light biome tint before palette snapping.
+7. Ruins: rusted poles with crossbars and sagging cables between them, neon
+   signs of made-up glyphs on some walls (flickering, magenta, cyan or amber),
+   spray-paint graffiti, and flora drawn as curly ornaments rather than
+   realistic plants.
+8. Rain follows the cycle: light drizzle when clear, heavier in the warning,
+   and in the downpour dense slanted sheets, splashes, a darker frame and a
+   slight shake.
+9. Minimap (top right, `M` toggles): biomes, walls, raised floors, shelters,
+   nests, cells, the bug.
+10. HUD: food pips with a mark at the 4 needed, and a rain timer that empties
+   and turns red in the warning.
 
 ## Arena: The Sprawl
 
@@ -474,6 +489,113 @@ Each biome has its own floor, deck, wall and cliff art:
   vertebral ridges.
 
 The HUD subtitle shows the biome the bug is standing in.
+
+## Rain cycle
+
+The world is ruled by the rain (inspired by Rain World's cycle). Only arenas
+with shelters run the cycle; test rooms without shelters never rain.
+
+| Property | Default | Unit |
+|---|---|---|
+| Cycle length (until the downpour) | 150 | s |
+| Warning (drizzle) before the downpour | 30 | s |
+| Downpour damage outside a shelter | 1 every 1.2 | hp, s |
+| Speed while in the downpour | × 0.75 | |
+| Food to sleep well | 4 | pips |
+| Most food carried | 8 | pips |
+| Shelter reach / time to curl up | 0.45 / 1 | tiles, s |
+| Healing after a fed sleep / damage after a hungry one | +4 / −2 (never below 1) | hp |
+
+1. `state.cycle = { on, n, t, phase }`: `phase` is `clear`, then `warning` in the
+   last 30 s, then `rain`. `rainLevel(state)` gives 0 (clear) rising to 0.4
+   over the warning and 1 in the downpour, for the renderer and audio.
+2. In the downpour the bug outside a shelter loses 1 health every 1.2 s
+   (event `rainHit`) and moves slower; dying this way gives `death` with
+   `cause: 'rain'`.
+3. **Shelters** (`H` in the map) are hatches in the floor. Standing still on
+   one (within 0.45 of its centre, same floor, slower than 0.5 tiles/s) for 1 s
+   puts the bug to sleep if it has 4 food, or at any time once the warning
+   has begun. Sleeping (event `sleep` with `fed`, `cycle`) starts the next
+   cycle: fed costs 4 food and heals 4; hungry costs 2 health (never below 1).
+   Webs, stun and slowdown are cleared; gnats are restored.
+4. Batteries stay batteries (dash charges); they are not food.
+
+## Gnats (prey)
+
+Small flying bugs that live around nests (`n` in the map). The bottom of the
+food chain: the player and cotton stainers eat them.
+
+| Property | Default | Unit |
+|---|---|---|
+| Per nest | 5 | |
+| Respawn at a nest with fewer | every 6 | s |
+| Hover height | 0.7 | levels above the floor |
+| Wander / flee speed | 1.4 / 3.8 | tiles/s |
+| Fear radius | 2.4 | tiles |
+| Leash (distance from the nest before turning home) | 5 | tiles |
+
+1. They fly: floor height does not stop them, walls do (they bounce off).
+2. They flee from the player and from any stainer hunting them.
+3. The player eats a gnat it touches (within `radius + 0.25`, height within 1.2
+   levels): +1 food, event `eat` (`who: 'player'`).
+4. Before the rain (warning and downpour) they fly home and hide in the nest;
+   nests don't respawn until the next cycle.
+
+## Hearing
+
+Creatures don't simply know where the bug is. Loud things make a noise
+(event `noise` with `x, y, r`):
+
+| Source | Radius (tiles) |
+|---|---|
+| Dash | 4 |
+| Landing from a fall | 2 + 3 × levels fallen |
+| Kill | 6 |
+| Hitting a cocoon | 5 |
+
+1. A wandering stainer (not fleeing, not paired, player out of aggro range)
+   or a stalking spider (player out of aggro range) inside the radius
+   **investigates**: it walks to where the sound was (not to the player) for
+   up to 6 s, then goes back to wandering.
+2. A creature already hunting the player (inside its aggro range, winding up,
+   lunging) ignores sounds.
+
+## Creatures go home
+
+Creatures live for themselves, not just to attack the bug:
+
+1. Stainers get hungry (after 12 s without food). A hungry wandering stainer
+   with a gnat within 4 tiles chases it at regroup speed and eats it on
+   contact (event `eat` with the stainer's id), which resets its hunger.
+2. When the warning starts, stainers and spiders stop hunting and walk home to
+   the nearest vent (walking the same paths as the bug, so they don't get stuck
+   on cliffs) and crawl in (event `burrow`). Vents stay shut until the next cycle.
+3. Cocoon turrets don't shoot in the downpour.
+
+## Lineage
+
+A vent remembers its dead. Each stainer killed raises its vent's lineage by
+one; each new stainer from that vent is an **elder** with chance
+`min(0.75, 0.34 × lineage)`. Elders are darker and bigger, 30 % faster,
+see 1.5 tiles further, and survive one dash: the first dash (or fast ball)
+throws them back (event `elderHit`), the second kills.
+
+## Threat
+
+`threatLevel(state)` (0 to 1) sums nearby danger: creatures within 9 tiles
+count 1 when winding up or lunging, 0.5 when hunting the bug, 0.1 otherwise;
+being webbed adds 0.3. Result is `1 − e^−sum`. Only the music reads it.
+
+## Sound (browser only)
+
+Web Audio, started by the first click or key; `N` mutes.
+
+1. Threat music: 8 layers (drone, sub pulse, ticks, junk-metal clanks, bass,
+   arpeggio, high pings, distorted organ) fade in one by one as threat rises.
+   Each layer picks a new pattern from a small pool every bar, so it
+   doesn't loop. Each biome has its own root note and scale.
+2. Rain: filtered noise that swells with `rainLevel`; the downpour adds a low
+   rumble and a slow, pitched-down organ chord.
 
 ## Not decided yet
 

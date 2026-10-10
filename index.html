@@ -148,6 +148,31 @@ body {
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 #tune-json { width: 100%; box-sizing: border-box; min-height: 160px; font: 11px var(--mono); color: var(--ink); background: var(--night); border: 1px solid var(--line); border-radius: 4px; padding: 8px; resize: vertical; }
 
+#cycle {
+  position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none;
+}
+#food { display: flex; gap: 5px; align-items: center; }
+#food i { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--muted); box-sizing: border-box; }
+#food i.full { background: #c8d43c; border-color: #c8d43c; box-shadow: 0 0 6px rgba(200, 212, 60, 0.6); }
+#food b { width: 2px; height: 14px; background: var(--ink); margin: 0 3px; }
+#raintimer { display: flex; gap: 2px; }
+#raintimer i { width: 4px; height: 7px; background: #566670; }
+#raintimer i.gone { background: #1d2228; }
+#raintimer.warn i:not(.gone) { background: #c2412b; }
+#raintimer.rain i { background: #2fa6c8; animation: pour 0.4s linear infinite; }
+@keyframes pour { 50% { opacity: 0.3; } }
+#cycle-label { font: 500 10px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+#minimap {
+  position: fixed; right: 16px; top: calc(env(safe-area-inset-top, 0px) + 70px); width: 200px; height: 110px;
+  image-rendering: pixelated; pointer-events: none; opacity: 0.9;
+}
+#sleep {
+  position: fixed; inset: 0; background: #0b0d10; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; color: var(--ink); transition: opacity 0.6s; z-index: 5;
+}
+#sleep h2 { margin: 0; font: 700 30px/1 var(--display); letter-spacing: 0.06em; }
+#sleep p { margin: 0; color: var(--muted); font: 500 12px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; }
 #toast {
   position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 70px); transform: translateX(-50%);
   background: var(--glass); border: 1px solid var(--line); border-radius: 2px; padding: 8px 12px; font-size: 12px;
@@ -175,6 +200,8 @@ body {
   #char-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 560px) {
+  #minimap { width: 120px; height: 66px; top: calc(env(safe-area-inset-top, 0px) + 64px); }
+  #cycle { bottom: calc(env(safe-area-inset-bottom, 0px) + 120px); }
   .vitals-box { --vs: 1.5; } /* 3 device px per art px on 2x phones */
   #panel { top: auto; left: 0; width: 100%; max-height: 62%; border-left: 0; border-top: 1px solid var(--line); border-radius: 0; }
   .brand { display: none; }
@@ -207,7 +234,7 @@ body {
   <canvas id="vitals" aria-hidden="true"></canvas>
   <div class="vitals-cap"><span><span id="cap-hp">10 / 10</span> health</span><span><span id="cap-ch">10 / 30</span> charges</span></div>
 </div>
-<div class="keys"><kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>T</kbd> tune</div>
+<div class="keys"><kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>M</kbd> map · <kbd>N</kbd> sound · <kbd>R</kbd> restart · <kbd>T</kbd> tune</div>
 <button class="btn" id="tune-btn" type="button" aria-expanded="false" aria-controls="panel">Tune</button>
 <button class="btn" id="bug-btn" type="button">Bug</button>
 <button id="dash-btn" type="button">DASH</button>
@@ -217,10 +244,10 @@ body {
   <header>
     <h1>Biometric</h1>
     <p>Choose your bug. Each one moves with its own personality; the dung beetle plays by its own rules.
-    Collect every battery in the pump yard. Dashes cost charge. Cotton stainers hunt in pairs; cocoons shoot webs, and break open into spiders.</p>
+    Collect every battery in the Sprawl. Dashes cost charge. Eat gnats, and before the rain comes, curl up in a shelter hatch: the downpour kills. Cotton stainers hunt in pairs and hear you land; cocoons shoot webs.</p>
   </header>
   <div id="char-grid"></div>
-  <p class="hint">Click a bug, or use the arrow keys and Enter. In game: <kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>C</kbd> change bug · <kbd>T</kbd> tune</p>
+  <p class="hint">Click a bug, or use the arrow keys and Enter. In game: <kbd>WASD</kbd> move · <kbd>Space</kbd> dash · <kbd>R</kbd> restart · <kbd>C</kbd> change bug · <kbd>M</kbd> map · <kbd>N</kbd> sound · <kbd>T</kbd> tune</p>
 </section>
 
 <section id="dead" hidden>
@@ -249,6 +276,13 @@ body {
 </aside>
 
 <div id="toast" hidden role="status"></div>
+<div id="cycle" aria-label="Food and rain timer">
+  <div id="food"></div>
+  <div id="raintimer"></div>
+  <div id="cycle-label">Cycle 1</div>
+</div>
+<canvas id="minimap" aria-label="Map"></canvas>
+<section id="sleep" hidden><h2 id="sleep-title">Cycle 2</h2><p id="sleep-text"></p></section>
 
 <script type="module" src="src/main.js"></script>
 <!-- page:end -->

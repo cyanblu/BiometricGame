@@ -1,7 +1,8 @@
 // Levels. A level is { name, map, heights, biomes } as rows of characters:
 //   map:     '#' wall, '.' floor, 'P' player spawn, '*' battery cell (+3),
 //            'B' big red battery (+9), 'V' vent (spawns cotton stainers),
-//            'O' cocoon with a web turret, 'b' or 's' cotton stainer.
+//            'O' cocoon with a web turret, 'b' or 's' cotton stainer,
+//            'H' shelter (sleep through the rain), 'n' gnat nest.
 //   heights: '0'-'9' flat level; ramps rise toward '>' +x, '<' -x, 'v' +y,
 //            '^' -y; stairs toward 'E' +x, 'W' -x, 'S' +y, 'N' -y. A slope
 //            starts at the level of the tile on its low side, ends one higher.
@@ -48,11 +49,11 @@ function valueNoise(seed, cell) {
 
 // Per-biome flavour for the generator.
 const STYLE = {
-  y: { plateaus: 2, walls: 0.012, stairs: 0.5, small: 6, big: 1, vents: 1, cocoons: 0 },
-  g: { plateaus: 4, walls: 0.02, stairs: 0.2, small: 6, big: 1, vents: 3, cocoons: 2 },
-  f: { plateaus: 4, walls: 0.035, stairs: 0.8, small: 6, big: 2, vents: 3, cocoons: 2 },
-  d: { plateaus: 4, walls: 0.025, stairs: 0.7, small: 6, big: 1, vents: 3, cocoons: 2 },
-  h: { plateaus: 4, walls: 0.025, stairs: 0.4, small: 6, big: 2, vents: 3, cocoons: 4 },
+  y: { plateaus: 2, walls: 0.012, stairs: 0.5, small: 6, big: 1, vents: 1, cocoons: 0, shelters: 1, nests: 1 },
+  g: { plateaus: 4, walls: 0.02, stairs: 0.2, small: 6, big: 1, vents: 3, cocoons: 2, shelters: 1, nests: 3 },
+  f: { plateaus: 4, walls: 0.035, stairs: 0.8, small: 6, big: 2, vents: 3, cocoons: 2, shelters: 1, nests: 1 },
+  d: { plateaus: 4, walls: 0.025, stairs: 0.7, small: 6, big: 1, vents: 3, cocoons: 2, shelters: 1, nests: 2 },
+  h: { plateaus: 4, walls: 0.025, stairs: 0.4, small: 6, big: 2, vents: 3, cocoons: 4, shelters: 1, nests: 2 },
 };
 
 export function generateArena(seed = 7, size = 80) {
@@ -196,10 +197,12 @@ function tryArena(seed, W) {
   };
   for (const b of 'ygfdh') {
     const st = STYLE[b];
+    if (put(b, 'H', st.shelters, 6, 5, false) < st.shelters) return null;
     if (put(b, 'O', st.cocoons, 5, 10, false) < st.cocoons) return null;
     if (put(b, 'V', st.vents, 6, 10, false) < st.vents) return null;
     if (put(b, 'B', st.big, 4, 6, true) < st.big) return null;
     if (put(b, '*', st.small, 4, 3, true) < st.small) return null;
+    if (put(b, 'n', st.nests, 5, 6, false) < st.nests) return null;
   }
   return { ...def, seed, map: tiles.map((r) => r.join('')) };
 }

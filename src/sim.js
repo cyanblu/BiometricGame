@@ -93,6 +93,42 @@ export const DEFAULT_PARAMS = {
   knockback: 7,
   stunTime: 0.35,
   invulnTime: 0.8,
+  // Rain cycle (only in arenas with shelters).
+  cycleLength: 150, // s until the downpour
+  rainWarn: 30, // s of warning drizzle before it
+  rainTick: 1.2, // s between downpour hits outside a shelter
+  rainDamage: 1,
+  rainSlow: 0.75, // speed multiplier in the downpour
+  foodQuota: 4, // food needed to sleep well
+  maxFood: 8,
+  shelterReach: 0.45, // tiles from the hatch centre
+  sleepTime: 1, // s standing still on a shelter to curl up
+  sleepHeal: 4,
+  hungerDamage: 2,
+  // Gnats: prey that lives around nests.
+  gnatsPerNest: 5,
+  nestRespawn: 6, // s
+  gnatHover: 0.7, // levels above the floor
+  gnatSpeed: 1.4,
+  gnatFlee: 3.8,
+  gnatFear: 2.4,
+  gnatLeash: 5,
+  gnatRadius: 0.25,
+  // Hearing: loud things make noise; idle creatures investigate it.
+  noiseDash: 4,
+  noiseLandBase: 2,
+  noiseLandPerLevel: 3,
+  noiseKill: 6,
+  noiseCocoon: 5,
+  investigateTime: 6,
+  // Creatures live for themselves: they get hungry and go home before the rain.
+  hungerTime: 12,
+  gnatHuntRange: 4,
+  // Lineage: vents remember their dead and send back elders.
+  lineageStep: 0.34,
+  lineageMax: 0.75,
+  elderSpeed: 1.3,
+  elderSight: 1.5,
 };
 
 // Seeded PRNG (mulberry32) kept in the state, so runs stay reproducible.
@@ -128,6 +164,8 @@ export function parseLevel(def) {
   const critters = [];
   const vents = [];
   const cocoons = [];
+  const shelters = [];
+  const nests = [];
   let spawn = { x: w / 2, y: h / 2 };
   for (let ty = 0; ty < h; ty++) {
     for (let tx = 0; tx < w; tx++) {
@@ -138,6 +176,8 @@ export function parseLevel(def) {
       else if (c === 'B') shards.push({ x: tx + 0.5, y: ty + 0.5, big: true });
       else if (c === 'V') vents.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'O') cocoons.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === 'H') shelters.push({ x: tx + 0.5, y: ty + 0.5 });
+      else if (c === 'n') nests.push({ x: tx + 0.5, y: ty + 0.5 });
       else if (c === 'b' || c === 's') critters.push({ x: tx + 0.5, y: ty + 0.5 });
       biome[ty * w + tx] = Math.max(0, BIOME_KEYS.indexOf((brows[ty] ?? '')[tx] ?? 'y'));
       const hc = (hrows[ty] ?? '')[tx] ?? '0';
@@ -153,7 +193,7 @@ export function parseLevel(def) {
     const lx = tx - sdx[i], ly = ty - sdy[i];
     level[i] = lx >= 0 && ly >= 0 && lx < w && ly < h ? level[ly * w + lx] : 0;
   }
-  return { name: def.name, w, h, solid, level, kind, sdx, sdy, biome, shards, critters, vents, cocoons, spawn };
+  return { name: def.name, w, h, solid, level, kind, sdx, sdy, biome, shards, critters, vents, cocoons, shelters, nests, spawn };
 }
 
 export function isSolid(map, tx, ty) {
@@ -252,6 +292,8 @@ export function makeSpider(state, x, y, extra = {}) {
     type: 'stainer', // 'stainer' (cotton stainer, hunts in pairs) or 'spider' (from cocoons, hunts alone)
     alive: true, mode: 'wander', cooldown: 0, partner: -1, role: 0, hitDone: false,
     lungeX: 0, lungeY: 0, stateTime: 0, stateTotal: 0, deadTime: 0,
+    vent: -1, elder: false, hp: 1, lastDash: -1, ballCool: 0,
+    hunger: 0, hunting: -1, listen: null, home: false, burrowed: false,
     ...extra,
   };
   state.critters.push(c);
@@ -283,6 +325,8 @@ export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
       stun: 0, invuln: 0,
       webbed: 0, // s of web slowdown left
       dashId: 0, // counts dashes, so one dash hits a cocoon only once
+      food: 0, // pips; foodQuota of them buy a good sleep
+      sleep: 0, // s spent curled up on a shelter
     },
     shards: map.shards.map((s) => ({ x: s.x, y: s.y, big: s.big, taken: false })),
     collected: 0,
@@ -307,7 +351,16 @@ export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
   state.vents = map.vents.map((v) => ({
     x: v.x, y: v.y,
     timer: params.ventFirstMin + rand(state) * (params.ventFirstMax - params.ventFirstMin),
+    lineage: 0,
   }));
+  state.cycle = {
+    on: map.shelters.length > 0, n: 1, t: 0, phase: 'clear', rainTimer: 0,
+    len: params.cycleLength, warn: params.rainWarn,
+  };
+  state.shelters = map.shelters.map((h) => ({ x: h.x, y: h.y, z: groundLevel(map, h.x, h.y) }));
+  state.nests = map.nests.map((n) => ({ x: n.x, y: n.y, timer: params.nestRespawn }));
+  state.gnats = [];
+  fillNests(state, params);
   return state;
 }
 
@@ -440,11 +493,12 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     if (p.webbed > 0) { p.webbed = 0; state.events.push({ type: 'webTorn' }); } // a dash tears the web
     p.heat = Math.min(1, p.heat + params.dashHeat);
     if (p.heat >= 1) p.overheated = true;
+    makeNoise(state, params, p.x, p.y, params.noiseDash);
   } else {
     p.heat = Math.max(0, p.heat - params.heatCool * dt);
     if (p.overheated && p.heat <= params.overheatRecover) p.overheated = false;
   }
-  const slow = p.webbed > 0 ? params.webSlow : 1;
+  const slow = (p.webbed > 0 ? params.webSlow : 1) * (state.cycle.on && state.cycle.phase === 'rain' ? params.rainSlow : 1);
   const topSpeed = params.maxSpeed * (p.overheated ? params.overheatSpeed : 1) * slow;
 
   let mvx, mvy;
@@ -496,6 +550,7 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   if (fell >= 0.5) {
     state.events.push({ type: 'land', who: 'player', x: p.x, y: p.y, height: fell });
     if (fell >= params.fallStunHeight) p.stun = Math.max(p.stun, params.fallStun);
+    makeNoise(state, params, p.x, p.y, params.noiseLandBase + params.noiseLandPerLevel * fell);
   }
 
   const reach = r + params.pickupRange;
@@ -511,10 +566,20 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
     }
   }
 
+  stepCycle(state, params, dt);
+  if (state.dead) { state.tick++; return state; }
+  stepGnats(state, params, dt);
   stepVents(state, params, dt);
   stepCocoons(state, params, dt, dashing);
   stepWebs(state, params, dt, dashing);
   stepSpiders(state, params, dt, dashing);
+  if (state.critters.some((c) => c.burrowed)) {
+    state.critters = state.critters.filter((c) => {
+      if (!c.burrowed) return true;
+      state.events.push({ type: 'burrow', id: c.id, x: c.x, y: c.y });
+      return false;
+    });
+  }
 
   if (!state.won && !state.dead) {
     state.time += dt;
@@ -531,7 +596,7 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 // A spider that is free to pair up for an attack.
-const canPair = (c) => c.alive && c.type === 'stainer' && c.mode === 'wander' && c.cooldown <= 0;
+const canPair = (c) => c.alive && c.type === 'stainer' && c.mode === 'wander' && c.cooldown <= 0 && !c.home;
 
 function nearestPartner(state, c, range) {
   let best = null, bestD = range;
@@ -562,10 +627,177 @@ function hitPlayer(state, c, params) {
   }
 }
 
-function killSpider(state, c, dirX = state.player.dashX, dirY = state.player.dashY) {
+function killSpider(state, c, params, dirX = state.player.dashX, dirY = state.player.dashY) {
   c.alive = false; c.mode = 'dead'; c.vx = 0; c.vy = 0; c.deadTime = 0;
   state.kills++;
-  state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX, dirY });
+  if (c.vent >= 0 && state.vents[c.vent]) state.vents[c.vent].lineage++;
+  state.events.push({ type: 'kill', id: c.id, x: c.x, y: c.y, dirX, dirY, elder: c.elder });
+  makeNoise(state, params, c.x, c.y, params.noiseKill);
+}
+
+// ---- rain cycle, shelters, food ------------------------------------------------
+
+// 0 when clear, rising to 0.4 over the warning, 1 in the downpour.
+export function rainLevel(state) {
+  const cy = state.cycle;
+  if (!cy || !cy.on) return 0;
+  if (cy.phase === 'rain') return 1;
+  if (cy.phase === 'warning') return 0.4 * Math.min(1, (cy.t - (cy.len - cy.warn)) / cy.warn);
+  return 0;
+}
+
+// The shelter the player is standing in, or null.
+export function shelterAt(state, params, e = state.player) {
+  for (const h of state.shelters) {
+    if (Math.hypot(h.x - e.x, h.y - e.y) <= params.shelterReach && Math.abs(h.z - e.z) < SAME_FLOOR) return h;
+  }
+  return null;
+}
+
+function stepCycle(state, params, dt) {
+  const cy = state.cycle, p = state.player;
+  if (!cy.on) return;
+  cy.t += dt;
+  const phase = cy.t < cy.len - cy.warn ? 'clear' : cy.t < cy.len ? 'warning' : 'rain';
+  if (phase !== cy.phase) { cy.phase = phase; state.events.push({ type: 'phase', phase, cycle: cy.n }); }
+  const sh = shelterAt(state, params);
+  if (sh && !p.air && Math.hypot(p.vx, p.vy) < 0.5 && (p.food >= params.foodQuota || phase !== 'clear')) {
+    p.sleep += dt;
+    if (p.sleep >= params.sleepTime) { hibernate(state, params, sh); return; }
+  } else p.sleep = 0;
+  if (phase === 'rain' && !sh) {
+    cy.rainTimer += dt;
+    if (cy.rainTimer >= params.rainTick) {
+      cy.rainTimer -= params.rainTick;
+      p.health = Math.max(0, p.health - params.rainDamage);
+      state.hits++;
+      state.events.push({ type: 'rainHit', x: p.x, y: p.y, health: p.health });
+      if (p.health <= 0 && !state.won) { state.dead = true; state.events.push({ type: 'death', cause: 'rain' }); }
+    }
+  } else cy.rainTimer = 0;
+}
+
+// Sleep through the rain: the next cycle starts.
+function hibernate(state, params, sh) {
+  const cy = state.cycle, p = state.player;
+  const fed = p.food >= params.foodQuota;
+  if (fed) { p.food -= params.foodQuota; p.health = Math.min(params.maxHealth, p.health + params.sleepHeal); }
+  else p.health = Math.max(1, p.health - params.hungerDamage);
+  cy.n++; cy.t = 0; cy.phase = 'clear'; cy.rainTimer = 0;
+  Object.assign(p, { sleep: 0, webbed: 0, stun: 0, vx: 0, vy: 0, x: sh.x, y: sh.y, px: sh.x, py: sh.y, heat: 0, overheated: false });
+  state.webs = [];
+  state.gnats = [];
+  fillNests(state, params);
+  for (const v of state.vents) v.timer = params.ventFirstMin + rand(state) * (params.ventFirstMax - params.ventFirstMin);
+  state.events.push({ type: 'sleep', fed, cycle: cy.n, x: sh.x, y: sh.y });
+}
+
+// ---- gnats -------------------------------------------------------------------
+
+function makeGnat(state, params, ni) {
+  const n = state.nests[ni];
+  const a = rand(state) * Math.PI * 2, r = 0.3 + rand(state) * 1.2;
+  const x = n.x + Math.cos(a) * r, y = n.y + Math.sin(a) * r;
+  const okX = isSolid(state.map, Math.floor(x), Math.floor(y)) ? n.x : x, okY = okX === n.x ? n.y : y;
+  const h = groundLevel(state.map, okX, okY) + params.gnatHover;
+  state.gnats.push({
+    id: state.nextId++, nest: ni, x: okX, y: okY, px: okX, py: okY, h, ph: h, vx: 0, vy: 0,
+    dirX: Math.cos(a), dirY: Math.sin(a), timer: rand(state) * 1.5,
+  });
+}
+
+function fillNests(state, params) {
+  state.nests.forEach((n, i) => {
+    for (let k = 0; k < params.gnatsPerNest; k++) makeGnat(state, params, i);
+    n.timer = params.nestRespawn;
+  });
+}
+
+function stepGnats(state, params, dt) {
+  const p = state.player, map = state.map;
+  const goHome = state.cycle.on && state.cycle.phase !== 'clear';
+  if (!goHome) {
+    state.nests.forEach((n, i) => {
+      n.timer -= dt;
+      if (n.timer > 0) return;
+      n.timer = params.nestRespawn;
+      if (state.gnats.filter((g) => g.nest === i).length < params.gnatsPerNest) makeGnat(state, params, i);
+    });
+  }
+  state.gnats = state.gnats.filter((g) => {
+    g.px = g.x; g.py = g.y; g.ph = g.h;
+    const n = state.nests[g.nest];
+    let fx = 0, fy = 0, scared = false;
+    const fear = (e) => {
+      const dx = g.x - e.x, dy = g.y - e.y, d = Math.hypot(dx, dy);
+      if (d < params.gnatFear && d > 1e-6) { const k = 1.3 - d / params.gnatFear; fx += (dx / d) * k; fy += (dy / d) * k; scared = true; }
+    };
+    if (!state.dead) fear(p);
+    for (const c of state.critters) if (c.alive && c.hunting === g.id) fear(c);
+    let tx, ty;
+    const toNest = Math.hypot(n.x - g.x, n.y - g.y);
+    if (goHome) {
+      if (toNest < 0.3) return false; // hidden in the nest until the next cycle
+      tx = ((n.x - g.x) / toNest) * params.gnatFlee * 0.8; ty = ((n.y - g.y) / toNest) * params.gnatFlee * 0.8;
+    } else if (scared) {
+      const l = Math.hypot(fx, fy) || 1;
+      tx = (fx / l) * params.gnatFlee; ty = (fy / l) * params.gnatFlee;
+    } else {
+      g.timer -= dt;
+      if (g.timer <= 0) {
+        const a = rand(state) * Math.PI * 2;
+        g.dirX = Math.cos(a); g.dirY = Math.sin(a); g.timer = 0.4 + rand(state) * 1.2;
+      }
+      if (toNest > params.gnatLeash) { g.dirX = (n.x - g.x) / toNest; g.dirY = (n.y - g.y) / toNest; }
+      tx = g.dirX * params.gnatSpeed; ty = g.dirY * params.gnatSpeed;
+    }
+    [g.vx, g.vy] = approach(g.vx, g.vy, tx, ty, 14 * dt);
+    // Flying: only walls (and the arena edge) stop them; they bounce off.
+    const nx = g.x + g.vx * dt, ny = g.y + g.vy * dt;
+    if (isSolid(map, Math.floor(nx), Math.floor(g.y))) { g.vx = -g.vx; g.dirX = -g.dirX; } else g.x = nx;
+    if (isSolid(map, Math.floor(g.x), Math.floor(ny))) { g.vy = -g.vy; g.dirY = -g.dirY; } else g.y = ny;
+    const want = groundLevel(map, g.x, g.y) + params.gnatHover;
+    g.h += (want - g.h) * Math.min(1, 5 * dt);
+    if (!state.dead && Math.hypot(g.x - p.x, g.y - p.y) < params.radius + params.gnatRadius && Math.abs(g.h - (p.z + 0.4)) < 1.2) {
+      p.food = Math.min(params.maxFood, p.food + 1);
+      state.events.push({ type: 'eat', who: 'player', x: g.x, y: g.y, z: g.h, food: p.food });
+      return false;
+    }
+    return true;
+  });
+}
+
+// ---- hearing -----------------------------------------------------------------
+
+const aggroOf = (c, params) => params.aggroRange + (c.elder ? params.elderSight : 0);
+
+// A loud sound: creatures that aren't already hunting the player go and look.
+function makeNoise(state, params, x, y, r) {
+  state.events.push({ type: 'noise', x, y, r });
+  const p = state.player;
+  for (const c of state.critters) {
+    if (!c.alive || c.home || Math.hypot(c.x - x, c.y - y) > r) continue;
+    const d = dist(c, p);
+    const idle = c.type === 'spider'
+      ? c.mode === 'stalk' && d >= params.spiderAggro
+      : c.mode === 'wander' && !c.fleeing && d >= aggroOf(c, params);
+    if (idle) c.listen = { x, y, t: params.investigateTime };
+  }
+}
+
+// How dire things are for the player, 0..1 (drives the music).
+export function threatLevel(state, params = DEFAULT_PARAMS) {
+  const p = state.player;
+  let sum = p.webbed > 0 ? 0.3 : 0;
+  for (const c of state.critters) {
+    if (!c.alive) continue;
+    const d = dist(c, p);
+    if (d > 9) continue;
+    if (['windup', 'lunge', 'swindup', 'slunge'].includes(c.mode)) sum += 1;
+    else if (c.type === 'spider' ? d < params.spiderAggro : d < aggroOf(c, params)) sum += 0.5;
+    else sum += 0.1;
+  }
+  return 1 - Math.exp(-sum);
 }
 
 // ---- cocoons, web turrets, webs -------------------------------------------------
@@ -616,6 +848,7 @@ function stepCocoons(state, params, dt, dashing) {
       c.reload = Math.max(c.reload, 0.6); // the turret is shaken
       c.charge = 0;
       state.events.push({ type: 'cocoonHit', id: c.id, x: c.x, y: c.y, hp: c.hp });
+      makeNoise(state, params, c.x, c.y, params.noiseCocoon);
     }
     if (hit && c.hp <= 0) {
       c.alive = false;
@@ -629,6 +862,7 @@ function stepCocoons(state, params, dt, dashing) {
       continue;
     }
     c.reload = Math.max(0, c.reload - dt);
+    if (state.cycle.on && state.cycle.phase === 'rain') { c.sees = false; c.charge = 0; continue; } // shuttered
     const dx = p.x - c.x, dy = p.y - c.y, d = Math.hypot(dx, dy);
     const muzzle = c.z + 0.5;
     c.sees = !state.dead && d <= params.turretRange && Math.abs(p.z - c.z) < 1.5
@@ -830,15 +1064,48 @@ function stepVents(state, params, dt) {
     if (v.timer > 0) continue;
     const alive = state.critters.filter((c) => c.alive && c.type === 'stainer').length;
     const d = dist(v, p);
-    if (alive >= params.maxSpiders || d < params.ventSafe || d > params.ventRange) { v.timer = 1; continue; }
+    if (alive >= params.maxSpiders || d < params.ventSafe || d > params.ventRange
+      || (state.cycle.on && state.cycle.phase !== 'clear')) { v.timer = 1; continue; }
+    const elder = v.lineage > 0 && rand(state) < Math.min(params.lineageMax, params.lineageStep * v.lineage);
     const c = makeSpider(state, v.x, v.y, {
       mode: 'emerge', stateTime: params.emergeTime, stateTotal: params.emergeTime,
+      vent: state.vents.indexOf(v), elder, hp: elder ? 2 : 1,
     });
     const a = rand(state) * Math.PI * 2;
     c.dirX = Math.cos(a); c.dirY = Math.sin(a);
     state.events.push({ type: 'spawn', id: c.id, x: v.x, y: v.y });
     v.timer = params.ventMin + rand(state) * (params.ventMax - params.ventMin);
   }
+}
+
+// Walk (by path) to where a sound came from; give up after a while.
+function investigate(state, c, params, dt, speed) {
+  c.listen.t -= dt;
+  const wp = pathTarget(state, c, c.listen);
+  const dx = c.listen.x - c.x, dy = c.listen.y - c.y;
+  if (!wp || c.listen.t <= 0 || Math.hypot(dx, dy) < 0.5) {
+    c.listen = null; c.dirX = 0; c.dirY = 0; c.timer = 0.8; // stop and look around
+    return [0, 0, params.critterAccel];
+  }
+  const ux = wp.x - c.x, uy = wp.y - c.y, l = Math.hypot(ux, uy) || 1;
+  c.dirX = ux / l; c.dirY = uy / l;
+  return [c.dirX * speed, c.dirY * speed, params.critterAccel];
+}
+
+// Before the rain: walk home to the nearest vent and crawl in.
+function goHome(state, c, params, speed) {
+  let best = null, bd = Infinity;
+  for (const v of state.vents) { const d = dist(c, v); if (d < bd) { bd = d; best = v; } }
+  if (!best) return [0, 0, params.critterAccel];
+  if (bd < 0.35 && Math.abs(c.z - groundLevel(state.map, best.x, best.y)) < SAME_FLOOR) {
+    c.burrowed = true;
+    return [0, 0, params.critterAccel];
+  }
+  const wp = pathTarget(state, c, best);
+  if (!wp) return [0, 0, params.critterAccel];
+  const ux = wp.x - c.x, uy = wp.y - c.y, l = Math.hypot(ux, uy) || 1;
+  c.dirX = ux / l; c.dirY = uy / l; c.fleeing = false;
+  return [c.dirX * speed, c.dirY * speed, params.critterAccel];
 }
 
 // Spider from a cocoon: drops, then hunts alone. Stalks toward the player,
@@ -865,6 +1132,7 @@ function spiderBrain(state, c, params, dt, dx, dy, d) {
     if (c.stateTime <= 0) { c.mode = 'stalk'; c.cooldown = params.spiderCooldown; }
     return [c.vx, c.vy, Infinity];
   }
+  if (c.home) return goHome(state, c, params, params.spiderSpeed);
   // Stalking.
   if (!state.dead && sameFloor && d < params.spiderLungeRange && c.cooldown <= 0) {
     c.mode = 'swindup'; c.stateTime = params.spiderWindup; c.stateTotal = params.spiderWindup;
@@ -872,8 +1140,10 @@ function spiderBrain(state, c, params, dt, dx, dy, d) {
   }
   if (!state.dead && d < params.spiderAggro) {
     c.dirX = -dx / d; c.dirY = -dy / d;
+    c.listen = null; // hunting: sounds don't matter
     return [c.dirX * params.spiderSpeed, c.dirY * params.spiderSpeed, params.critterAccel];
   }
+  if (c.listen) return investigate(state, c, params, dt, params.critterSpeed * 1.6);
   c.timer -= dt;
   if (c.timer <= 0) {
     const a = rand(state) * Math.PI * 2;
@@ -893,6 +1163,10 @@ function stepSpiders(state, params, dt, dashing) {
     c.px = c.x; c.py = c.y; c.pz = c.z;
     if (!c.alive) { c.deadTime += dt; continue; }
     c.cooldown = Math.max(0, c.cooldown - dt);
+    c.ballCool = Math.max(0, c.ballCool - dt);
+    // Before the rain, everyone not in the middle of an attack heads home.
+    if (state.cycle.on && state.cycle.phase !== 'clear' && !c.home
+      && ['wander', 'stalk'].includes(c.mode)) { c.home = true; c.listen = null; c.partner = -1; }
   }
   // Old corpses leave the simulation (the renderer keeps a husk on the floor).
   state.critters = state.critters.filter((c) => {
@@ -903,7 +1177,7 @@ function stepSpiders(state, params, dt, dashing) {
 
   // Pair up, in list order so the result is deterministic.
   state.critters.forEach((c) => {
-    if (!canPair(c) || dist(c, p) > params.aggroRange) return;
+    if (!canPair(c) || dist(c, p) > aggroOf(c, params)) return;
     const o = nearestPartner(state, c, params.pairRange);
     if (!o) return;
     for (const [a, partner, role] of [[c, o.id, 0], [o, c.id, 1]]) {
@@ -917,6 +1191,7 @@ function stepSpiders(state, params, dt, dashing) {
     const dx = c.x - p.x, dy = c.y - p.y;
     const d = Math.hypot(dx, dy) || 1;
     let tx = 0, ty = 0, accel = params.critterAccel;
+    const fast = c.elder ? params.elderSpeed : 1;
 
     if (c.type === 'spider') {
       [tx, ty, accel] = spiderBrain(state, c, params, dt, dx, dy, d);
@@ -931,7 +1206,7 @@ function stepSpiders(state, params, dt, dashing) {
         c.lungeX = c.dirX; c.lungeY = c.dirY;
       }
     } else if (c.mode === 'lunge') {
-      c.vx = c.lungeX * params.lungeSpeed; c.vy = c.lungeY * params.lungeSpeed;
+      c.vx = c.lungeX * params.lungeSpeed * fast; c.vy = c.lungeY * params.lungeSpeed * fast;
       tx = c.vx; ty = c.vy; accel = Infinity;
       c.stateTime -= dt;
       if (c.stateTime <= 0) {
@@ -950,19 +1225,37 @@ function stepSpiders(state, params, dt, dashing) {
       if (c.stateTime <= 0) {
         c.mode = 'wander'; c.partner = -1; c.cooldown = params.attackCooldown; c.timer = 0;
       }
+    } else if (c.home) {
+      [tx, ty, accel] = goHome(state, c, params, params.critterFleeSpeed * 0.7 * fast);
     } else {
       // Wander mode.
-      const partner = c.cooldown <= 0 && d < params.aggroRange ? nearestPartner(state, c, params.regroupRange) : null;
+      c.hunger += dt;
+      const hunted = c.hunger >= params.hungerTime ? nearestGnat(state, c, params) : null;
+      c.hunting = hunted ? hunted.id : -1;
+      const partner = c.cooldown <= 0 && d < aggroOf(c, params) ? nearestPartner(state, c, params.regroupRange) : null;
+      if (partner || d < aggroOf(c, params)) c.listen = null; // hunting the player: sounds don't matter
       if (partner) {
         const px = partner.x - c.x, py = partner.y - c.y, pl = Math.hypot(px, py) || 1;
         c.dirX = px / pl; c.dirY = py / pl; c.fleeing = false; c.timer = 0.2;
-        tx = c.dirX * params.regroupSpeed; ty = c.dirY * params.regroupSpeed;
+        tx = c.dirX * params.regroupSpeed * fast; ty = c.dirY * params.regroupSpeed * fast;
+      } else if (d >= params.critterFear && hunted) {
+        // Hungry: chase a gnat and eat it.
+        const gx = hunted.x - c.x, gy = hunted.y - c.y, gl = Math.hypot(gx, gy) || 1;
+        c.dirX = gx / gl; c.dirY = gy / gl; c.fleeing = false;
+        tx = c.dirX * params.regroupSpeed * fast; ty = c.dirY * params.regroupSpeed * fast;
+        if (gl < params.critterRadius + params.gnatRadius) {
+          state.gnats = state.gnats.filter((g) => g !== hunted);
+          c.hunger = 0; c.hunting = -1;
+          state.events.push({ type: 'eat', who: c.id, x: hunted.x, y: hunted.y, z: hunted.h });
+        }
+      } else if (d >= params.critterFear && c.listen) {
+        [tx, ty, accel] = investigate(state, c, params, dt, params.regroupSpeed * fast);
       } else {
         let speed;
         if (d < params.critterFear) {
           c.fleeing = true;
           c.dirX = dx / d; c.dirY = dy / d;
-          speed = params.critterFleeSpeed;
+          speed = params.critterFleeSpeed * fast;
           c.timer = 0.4; // keep running a little after leaving the fear radius
         } else {
           c.timer -= dt;
@@ -976,7 +1269,7 @@ function stepSpiders(state, params, dt, dashing) {
             }
             c.timer = 0.8 + rand(state) * 1.8;
           }
-          speed = c.fleeing ? params.critterFleeSpeed : params.critterSpeed;
+          speed = (c.fleeing ? params.critterFleeSpeed : params.critterSpeed) * fast;
         }
         tx = c.dirX * speed; ty = c.dirY * speed;
       }
@@ -994,12 +1287,23 @@ function stepSpiders(state, params, dt, dashing) {
     if (c.mode === 'wander' && want > 0.2 && Math.hypot(c.vx, c.vy) < want * 0.3 && !c.fleeing) c.timer = 0;
 
     const sameFloor = Math.abs(c.z - p.z) < SAME_FLOOR;
-    if (dashing && sameFloor && dist(c, p) < contact + params.killMargin) { killSpider(state, c); continue; }
+    if (dashing && sameFloor && dist(c, p) < contact + params.killMargin) {
+      // Elders survive their first dash (only once per dash): thrown back.
+      if (c.elder && (c.hp > 1 || c.lastDash === p.dashId)) {
+        if (c.lastDash !== p.dashId) { c.lastDash = p.dashId; elderThrow(state, c, params, p.dashX, p.dashY); }
+        continue;
+      }
+      killSpider(state, c, params); continue;
+    }
     if (p.ball) {
       // A fast ball squashes whatever it rolls over.
       const b = p.ball, bs = Math.hypot(b.vx, b.vy);
       if (bs >= params.ballKillSpeed && Math.abs(c.z - b.z) < SAME_FLOOR && dist(c, b) < params.ballRadius + params.critterRadius) {
-        killSpider(state, c, b.vx / bs, b.vy / bs); continue;
+        if (c.elder && (c.hp > 1 || c.ballCool > 0)) {
+          if (c.ballCool <= 0) { c.ballCool = 0.4; elderThrow(state, c, params, b.vx / bs, b.vy / bs); }
+          continue;
+        }
+        killSpider(state, c, params, b.vx / bs, b.vy / bs); continue;
       }
     }
     if ((c.mode === 'lunge' || c.mode === 'slunge') && !c.hitDone && sameFloor && dist(c, p) < contact + 0.05) {
@@ -1007,6 +1311,23 @@ function stepSpiders(state, params, dt, dashing) {
       hitPlayer(state, c, params);
     }
   }
+}
+
+function elderThrow(state, c, params, ux, uy) {
+  c.hp--;
+  c.mode = 'thrown'; c.stateTime = params.thrownTime; c.partner = -1;
+  c.vx = ux * params.thrownSpeed * 1.4; c.vy = uy * params.thrownSpeed * 1.4;
+  state.events.push({ type: 'elderHit', id: c.id, x: c.x, y: c.y });
+}
+
+function nearestGnat(state, c, params) {
+  let best = null, bd = params.gnatHuntRange;
+  for (const g of state.gnats) {
+    if (Math.abs(g.h - params.gnatHover - c.z) > SAME_FLOOR) continue;
+    const d = dist(c, g);
+    if (d < bd) { bd = d; best = g; }
+  }
+  return best;
 }
 
 // Smallest gap between a circle and anything that blocks it (walls, and

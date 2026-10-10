@@ -1,6 +1,7 @@
 // Browser entry: fixed-timestep loop, input, HUD and the tunables panel.
-import { createState, step, STEP, DEFAULT_PARAMS, isSolid, groundLevel, BIOME_KEYS } from './sim.js';
-import { createRenderer, LOOK_DEFAULTS } from './render.js';
+import { createState, step, STEP, DEFAULT_PARAMS, isSolid, groundLevel, BIOME_KEYS, rainLevel, threatLevel } from './sim.js';
+import { createRenderer, createMinimap, LOOK_DEFAULTS } from './render.js';
+import { createAudio } from './audio.js';
 import { LEVELS, BIOMES } from './levels.js';
 import { createRig, updateRig, setRigMotion, landRig, RIG_DEFAULTS, SPIDER_RIG, STAINER_RIG } from './bug.js';
 import { stepResponse } from './dynamics.js';
@@ -91,7 +92,8 @@ function start(snapshot) {
     for (const c of state.critters) {
       ids.add(c.id);
       if (!rigs.critters.has(c.id)) {
-        const rig = createRig(c.x, c.y, Math.atan2(c.dirY, c.dirX) || c.id * 1.3, c.type === 'spider' ? SPIDER_RIG : STAINER_RIG);
+        const kind = c.type === 'spider' ? SPIDER_RIG : STAINER_RIG;
+        const rig = createRig(c.x, c.y, Math.atan2(c.dirY, c.dirX) || c.id * 1.3, c.elder ? { ...kind, scale: kind.scale * 1.25 } : kind);
         rig.zLevel = c.z;
         rigs.critters.set(c.id, rig);
       }
@@ -100,6 +102,10 @@ function start(snapshot) {
   }
   makeRigs();
   let shake = 0, vitalsFlash = 0;
+  let sleepPause = 0; // s the sleep screen holds the game still
+  const audio = createAudio();
+  const minimap = createMinimap($('minimap'));
+  let showMap = true;
   const vitals = createVitals($('vitals'));
   let started = false;
 
@@ -113,6 +119,7 @@ function start(snapshot) {
     centreCamera();
     $('win').hidden = true;
     $('dead').hidden = true;
+    $('sleep').hidden = true; sleepPause = 0;
   }
 
   // ---- input -------------------------------------------------------------
@@ -230,7 +237,12 @@ function start(snapshot) {
     }
     if (e.code === 'KeyR') { restart(); begin(); }
     if (e.code === 'KeyT') togglePanel();
+    if (e.code === 'KeyM') { showMap = !showMap; $('minimap').hidden = !showMap; }
+    if (e.code === 'KeyN') flash(audio.toggle() ? 'Sound off (N)' : 'Sound on (N)');
   });
+  // Audio may only start after a user gesture.
+  window.addEventListener('pointerdown', () => audio.start());
+  window.addEventListener('keydown', () => audio.start());
   window.addEventListener('keyup', (e) => { if (KEYMAP[e.code]) keys.delete(KEYMAP[e.code]); });
   window.addEventListener('blur', () => keys.clear());
 
@@ -430,7 +442,7 @@ function start(snapshot) {
   }
 
   // ---- HUD ---------------------------------------------------------------
-  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudKills = $('hud-kills'), capHp = $('cap-hp'), capCh = $('cap-ch'), hudBpmLabel = $('hud-bpm-label'), hudBiome = $('hud-biome');
+  const hudShards = $('hud-shards'), hudTime = $('hud-time'), hudDash = $('hud-dash'), hudBpm = $('hud-bpm'), hudKills = $('hud-kills'), capHp = $('cap-hp'), capCh = $('cap-ch'), hudBpmLabel = $('hud-bpm-label'), hudBiome = $('hud-biome'), hudFood = $('food'), hudRain = $('raintimer'), hudCycle = $('cycle-label');
   const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
   function updateHud() {
     hudShards.textContent = `${state.collected} / ${state.shards.length}`;
@@ -453,6 +465,32 @@ function start(snapshot) {
     const bk = m.biome && bx >= 0 && by >= 0 && bx < m.w && by < m.h ? BIOME_KEYS[m.biome[by * m.w + bx]] : 'y';
     const label = `Prototype 0.9 · ${BIOMES[bk]?.name ?? ''}`;
     if (hudBiome.textContent !== label) hudBiome.textContent = label;
+    // Food pips with a bar at the quota, and the rain timer.
+    const food = `${pl.food}/${params.foodQuota}/${params.maxFood}`;
+    if (hudFood.dataset.v !== food) {
+      hudFood.dataset.v = food;
+      hudFood.innerHTML = '';
+      for (let i = 0; i < params.maxFood; i++) {
+        if (i === params.foodQuota) hudFood.appendChild(document.createElement('b'));
+        const pip = document.createElement('i');
+        if (i < pl.food) pip.className = 'full';
+        hudFood.appendChild(pip);
+      }
+    }
+    const cy = state.cycle;
+    $('cycle').hidden = !cy.on;
+    if (cy.on) {
+      const N = 30, left = Math.max(0, Math.ceil((1 - cy.t / cy.len) * N));
+      const key = `${left}/${cy.phase}`;
+      if (hudRain.dataset.v !== key) {
+        hudRain.dataset.v = key;
+        hudRain.className = cy.phase === 'warning' ? 'warn' : cy.phase === 'rain' ? 'rain' : '';
+        hudRain.innerHTML = '';
+        for (let i = 0; i < N; i++) { const d = document.createElement('i'); if (i >= left && cy.phase !== 'rain') d.className = 'gone'; hudRain.appendChild(d); }
+      }
+      const cl = `Cycle ${cy.n}`;
+      if (hudCycle.textContent !== cl) hudCycle.textContent = cl;
+    }
   }
   function onWin() {
     const name = LEVELS[levelIndex].name;
@@ -465,9 +503,17 @@ function start(snapshot) {
   }
   $('again').addEventListener('click', () => { restart(); begin(); });
   $('again-dead').addEventListener('click', () => { restart(); begin(); });
-  function onDeath() {
+  function onSleep(e) {
+    $('sleep-title').textContent = `Cycle ${e.cycle}`;
+    $('sleep-text').textContent = e.fed ? 'Slept well. Health restored.' : 'Slept hungry. Find gnats to eat.';
+    $('sleep').hidden = false; $('sleep').style.opacity = 1;
+    sleepPause = 2.4;
+    centreCamera();
+  }
+  function onDeath(e = {}) {
+    $('dead').querySelector('h2').textContent = e.cause === 'rain' ? 'Washed away' : 'Signal lost';
     $('dead-time').textContent = fmtTime(state.time);
-    $('dead-stats').textContent = `${state.collected} of ${state.shards.length} cells, ${state.kills} spiders killed.`;
+    $('dead-stats').textContent = `${state.collected} of ${state.shards.length} cells, ${state.kills} killed, ${state.cycle.n - 1} cycles survived.`;
     $('dead').hidden = false;
   }
 
@@ -493,8 +539,18 @@ function start(snapshot) {
       else if (e.type === 'webbed') shake = Math.max(shake, 0.08);
       else if (e.type === 'spawn') renderer.ventPuff({ x: e.x, y: e.y });
       else if (e.type === 'corpse') renderer.bakeHusk(state.map, e.x, e.y);
+      else if (e.type === 'eat') renderer.eatFx(e.x, e.y, e.z);
+      else if (e.type === 'noise') renderer.noiseRing(e.x, e.y, e.r);
+      else if (e.type === 'rainHit') { renderer.hitFx(ix, iy); shake = Math.max(shake, 0.2); vitalsFlash = 0.2; }
+      else if (e.type === 'elderHit') { renderer.splat(e.x, e.y); shake = Math.max(shake, 0.1); }
+      else if (e.type === 'burrow') renderer.ventPuff({ x: e.x, y: e.y });
+      else if (e.type === 'phase') {
+        if (e.phase === 'warning') flash('The rain is coming. Find a shelter hatch.');
+        else if (e.phase === 'rain') flash('Downpour. Get under cover.');
+      }
+      else if (e.type === 'sleep') onSleep(e);
       else if (e.type === 'win') onWin();
-      else if (e.type === 'death') onDeath();
+      else if (e.type === 'death') onDeath(e);
     }
     state.events.length = 0;
   }
@@ -517,7 +573,12 @@ function start(snapshot) {
     last = now;
     clock += dt;
     if (menuOpen) animatePreviews(dt, clock);
-    if (started && !menuOpen) {
+    if (sleepPause > 0) {
+      sleepPause -= dt;
+      $('sleep').style.opacity = Math.min(1, sleepPause / 0.6);
+      if (sleepPause <= 0) $('sleep').hidden = true;
+    }
+    if (started && !menuOpen && sleepPause <= 0) {
       acc += dt;
       let input = readInput();
       const sp = simParams();
@@ -563,10 +624,18 @@ function start(snapshot) {
     view.camX += (target.x - view.camX) * k;
     view.camY += (target.y - 10 - view.camY) * k;
     const fit = Math.min(renderer.size.w, renderer.size.h) / 560;
+    const storm = rainLevel(state);
+    if (storm >= 0.99 && started) shake = Math.max(shake, 0.03); // the downpour hammers everything
     shake = Math.max(0, shake - dt);
     const jolt = shake > 0 ? Math.sin(clock * 90) * 4 * (shake / 0.25) : 0;
     renderer.draw(state, { ...view, camX: view.camX + jolt, zoom: view.zoom * Math.min(1.6, Math.max(0.75, fit)) }, rigs, clock, look, dt);
     updateHud();
+    if (showMap) minimap.draw(state, clock, storm);
+    {
+      const m = state.map, bx = Math.floor(p.x), by = Math.floor(p.y);
+      const bi = m.biome && bx >= 0 && by >= 0 && bx < m.w && by < m.h ? m.biome[by * m.w + bx] : 0;
+      audio.update(dt, { threat: started ? threatLevel(state, simParams()) : 0, rain: storm, biome: bi });
+    }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
