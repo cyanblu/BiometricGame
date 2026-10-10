@@ -41,6 +41,8 @@ export const DEFAULT_PARAMS = {
   fallStun: 0.25, // s
   // Cocoons with web turrets, and the spiders inside them.
   cocoonRadius: 0.32,
+  cocoonHits: 3, // dash hits (or fast-ball hits) to break one open
+  cocoonRecoil: 4, // tiles/s the player bounces off a cocoon it dashed into
   turretRange: 7, // tiles
   turretTurn: 3, // rad/s
   turretCharge: 0.45, // s of visible wind-up before a shot
@@ -68,6 +70,7 @@ export const DEFAULT_PARAMS = {
   ballKick: 9, // ball speed after a dash kick
   ballKillSpeed: 3, // a ball at least this fast squashes spiders
   beetleSpeed: 6, // how fast the beetle runs to get behind its ball
+  ballEngage: 0.6, // beyond touching distance + this (or on another floor) the beetle walks freely
   critterRadius: 0.18,
   critterSpeed: 1.1,
   critterFleeSpeed: 3.2,
@@ -272,6 +275,7 @@ export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
       health: params.maxHealth,
       stun: 0, invuln: 0,
       webbed: 0, // s of web slowdown left
+      dashId: 0, // counts dashes, so one dash hits a cocoon only once
     },
     shards: map.shards.map((s) => ({ x: s.x, y: s.y, big: s.big, taken: false })),
     collected: 0,
@@ -290,6 +294,7 @@ export function createState(level, seed = 1, params = DEFAULT_PARAMS) {
   state.cocoons = map.cocoons.map((c) => ({
     id: state.nextId++, x: c.x, y: c.y, z: groundLevel(map, c.x, c.y), alive: true,
     aim: rand(state) * Math.PI * 2, reload: 1 + rand(state) * 2, charge: 0, sees: false,
+    hp: params.cocoonHits, lastDash: -1, ballCool: 0,
   }));
   state.webs = [];
   state.vents = map.vents.map((v) => ({
@@ -420,6 +425,7 @@ export function step(state, input, params = DEFAULT_PARAMS, dt = STEP) {
   if (p.dashBuffer > 0 && p.dashCooldown <= 0 && p.dashTime <= 0 && !p.overheated && !stunned && p.charges > 0) {
     p.charges--;
     p.dashX = p.faceX; p.dashY = p.faceY;
+    p.dashId++;
     // Dung beetle next to its ball: the dash kicks the ball instead.
     p.dashTime = params.mech === 'ball' && kickBall(state, params) ? 0 : params.dashDuration;
     p.dashCooldown = params.dashCooldown;
@@ -574,11 +580,37 @@ function stepCocoons(state, params, dt, dashing) {
   const p = state.player;
   for (const c of state.cocoons) {
     if (!c.alive) continue;
-    // Broken by a dash, or by a fast ball.
-    const ball = p.ball, bs = ball ? Math.hypot(ball.vx, ball.vy) : 0;
-    const byDash = dashing && Math.abs(c.z - p.z) < SAME_FLOOR && dist(c, p) < params.radius + params.cocoonRadius + params.killMargin;
-    const byBall = ball && bs >= params.ballKillSpeed && Math.abs(c.z - ball.z) < SAME_FLOOR && dist(c, ball) < params.ballRadius + params.cocoonRadius;
-    if (byDash || byBall) {
+    // Takes cocoonHits hits: each dash counts once (the dash stops and the
+    // player bounces off), and a fast ball counts once per bounce.
+    c.ballCool = Math.max(0, c.ballCool - dt);
+    const ball = p.ball;
+    let hit = false;
+    if (dashing && c.lastDash !== p.dashId && Math.abs(c.z - p.z) < SAME_FLOOR
+      && dist(c, p) < params.radius + params.cocoonRadius + params.killMargin) {
+      c.lastDash = p.dashId;
+      hit = true;
+      const dx = p.x - c.x, dy = p.y - c.y, d = Math.hypot(dx, dy) || 1;
+      p.dashTime = 0;
+      p.vx = (dx / d) * params.cocoonRecoil; p.vy = (dy / d) * params.cocoonRecoil;
+    }
+    if (ball && Math.abs(c.z - ball.z) < SAME_FLOOR) {
+      // The ball is stopped by a cocoon and bounces off it.
+      const dx = ball.x - c.x, dy = ball.y - c.y, d = Math.hypot(dx, dy), min = params.ballRadius + params.cocoonRadius;
+      if (d < min && d > 1e-9) {
+        const nx = dx / d, ny = dy / d, bs = Math.hypot(ball.vx, ball.vy);
+        ball.x += nx * (min - d); ball.y += ny * (min - d);
+        const vn = ball.vx * nx + ball.vy * ny;
+        if (vn < 0) { ball.vx -= (1 + params.ballBounce) * vn * nx; ball.vy -= (1 + params.ballBounce) * vn * ny; }
+        if (bs >= params.ballKillSpeed && c.ballCool <= 0) { hit = true; c.ballCool = 0.4; }
+      }
+    }
+    if (hit) {
+      c.hp--;
+      c.reload = Math.max(c.reload, 0.6); // the turret is shaken
+      c.charge = 0;
+      state.events.push({ type: 'cocoonHit', id: c.id, x: c.x, y: c.y, hp: c.hp });
+    }
+    if (hit && c.hp <= 0) {
       c.alive = false;
       state.events.push({ type: 'cocoon', id: c.id, x: c.x, y: c.y });
       // The spider inside drops out from above and lands on its own.
@@ -656,6 +688,49 @@ function separate(map, p, b, gap, params) {
   }
 }
 
+// Close enough to the ball, on the same floor, to work it.
+function atBall(p, params) {
+  const b = p.ball;
+  return Math.hypot(b.x - p.x, b.y - p.y) <= params.radius + params.ballRadius + params.ballEngage
+    && Math.abs(b.z - p.z) < SAME_FLOOR && !p.air && !b.air;
+}
+
+// Shortest walk (tiles, using the same walk-and-drop rules as movement) from
+// tile (sx, sy) to (gx, gy). Returns the tiles from start to goal, or null.
+export function findPath(map, sx, sy, gx, gy) {
+  const w = map.w, h = map.h, start = sy * w + sx, goal = gy * w + gx;
+  if (sx < 0 || sy < 0 || gx < 0 || gy < 0 || sx >= w || gx >= w || sy >= h || gy >= h) return null;
+  const prev = new Int32Array(w * h).fill(-1);
+  prev[start] = start;
+  const queue = [start];
+  for (let qi = 0; qi < queue.length; qi++) {
+    const cur = queue[qi];
+    if (cur === goal) break;
+    const x = cur % w, y = (cur - x) / w;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy, ni = ny * w + nx;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h || prev[ni] !== -1) continue;
+      if (!canPass(map, x, y, nx, ny)) continue;
+      prev[ni] = cur; queue.push(ni);
+    }
+  }
+  if (prev[goal] === -1) return null;
+  const path = [];
+  for (let i = goal; ; i = prev[i]) { path.push([i % w, Math.floor(i / w)]); if (i === start) break; }
+  return path.reverse();
+}
+
+// Next point for the beetle on its way back to the ball (cached per tile pair).
+function pathTarget(state, p, b) {
+  const sx = Math.floor(p.x), sy = Math.floor(p.y), gx = Math.floor(b.x), gy = Math.floor(b.y);
+  if (sx === gx && sy === gy) return { x: b.x, y: b.y };
+  const key = `${sx},${sy}>${gx},${gy}`;
+  if (p.pathKey !== key) { p.pathKey = key; p.path = findPath(state.map, sx, sy, gx, gy); }
+  if (!p.path || p.path.length < 2) return null;
+  const [nx, ny] = p.path[1];
+  return { x: nx + 0.5, y: ny + 0.5 };
+}
+
 function touchingBall(p, params) {
   const b = p.ball;
   return Math.hypot(b.x - p.x, b.y - p.y) <= params.radius + params.ballRadius + 0.12
@@ -704,6 +779,24 @@ function stepBall(state, dir, params, dt, topSpeed) {
   if (ballFell >= 0.5) state.events.push({ type: 'land', who: 'ball', x: b.x, y: b.y, height: ballFell });
   b.vx -= params.ballBounce * (before.vx - b.vx);
   b.vy -= params.ballBounce * (before.vy - b.vy);
+  if (!atBall(p, params)) {
+    // Away from its ball (or on another floor): you steer the beetle like any
+    // bug. Let go and it finds its own way back to the ball.
+    let wantX = 0, wantY = 0;
+    if (dir.mag > 0) { wantX = dir.x * topSpeed; wantY = dir.y * topSpeed; } else {
+      const wp = pathTarget(state, p, b);
+      if (wp) {
+        const dx = wp.x - p.x, dy = wp.y - p.y, d = Math.hypot(dx, dy) || 1;
+        wantX = (dx / d) * topSpeed; wantY = (dy / d) * topSpeed;
+      }
+    }
+    const moving = wantX || wantY;
+    const grip = p.air ? params.airControl : 1;
+    [p.vx, p.vy] = approach(p.vx, p.vy, wantX, wantY, (moving ? params.accel : params.decel) * grip * dt);
+    const vl = Math.hypot(p.vx, p.vy);
+    if (vl > 0.2) { p.faceX = p.vx / vl; p.faceY = p.vy / vl; }
+    return;
+  }
   // The beetle heads for the spot behind the ball.
   let aimX = 0, aimY = 0;
   if (dir.mag > 0) { aimX = dir.x / dir.mag; aimY = dir.y / dir.mag; }

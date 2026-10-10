@@ -68,20 +68,44 @@ test('webs stick to walls', () => {
   assert.ok(s.events.some((e) => e.type === 'webSplat'));
 });
 
-test('a dash breaks a cocoon; a spider drops from above and lands', () => {
+test('a cocoon takes three dash hits; each dash counts once and bounces you off; then a spider drops', () => {
   const s = createState(yard('#.P.O......#'));
-  s.cocoons[0].reload = 99;
-  s.player.faceX = 1; s.player.faceY = 0;
-  step(s, { dash: true }, P);
-  run(s, {}, P.dashDuration);
-  assert.equal(s.cocoons[0].alive, false);
-  const sp = s.critters.find((c) => c.type === 'spider');
+  const c = s.cocoons[0];
+  c.reload = 99;
+  for (let hitNo = 1; hitNo <= P.cocoonHits; hitNo++) {
+    s.player.x = 2.5; s.player.y = 3.5; s.player.vx = 0; s.player.vy = 0;
+    s.player.faceX = 1; s.player.faceY = 0; s.player.dashCooldown = 0; s.player.heat = 0;
+    step(s, { dash: true }, P);
+    run(s, {}, P.dashDuration + 0.05);
+    assert.equal(c.hp, P.cocoonHits - hitNo, `after dash ${hitNo}`);
+    if (hitNo < P.cocoonHits) {
+      assert.ok(c.alive);
+      assert.ok(s.player.x < c.x - P.radius - P.cocoonRadius + 0.05, 'bounced off, not through');
+    }
+  }
+  assert.equal(c.alive, false);
+  assert.equal(s.events.filter((e) => e.type === 'cocoonHit').length, P.cocoonHits);
+  const sp = s.critters.find((q) => q.type === 'spider');
   assert.ok(sp, 'spider released');
-  assert.ok(sp.air || sp.z > 0 || s.events.some((e) => e.type === 'land' && e.who === sp.id), 'it fell');
   run(s, {}, 1);
   assert.equal(sp.air, false);
   assert.equal(sp.z, 0);
   assert.ok(s.events.some((e) => e.type === 'land' && e.who === sp.id && e.height > 1));
+});
+
+test('a fast dung ball hits a cocoon once per bounce, three bounces break it', async () => {
+  const B = { ...P, mech: 'ball' };
+  const s = createState(yard('#.P...O....#'), 1, B);
+  const c = s.cocoons[0];
+  c.reload = 99;
+  for (let n = 0; n < 3; n++) {
+    const b = s.player.ball;
+    s.player.x = 2.5; s.player.y = 1.5; b.x = 4.5; b.y = 3.5; b.vx = 6; b.vy = 0;
+    for (let i = 0; i < 40; i++) step(s, {}, B);
+    if (n < 2) assert.ok(c.alive && c.hp === 2 - n, `after ball hit ${n + 1}: hp ${c.hp}`);
+    assert.ok(s.player.ball.x < c.x, 'the ball bounced back');
+  }
+  assert.equal(c.alive, false);
 });
 
 test('walking into a cocoon does not break it; it is solid', () => {

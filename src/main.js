@@ -482,6 +482,7 @@ function start(snapshot) {
         if (e.who === 'player' && e.height >= 1.5) shake = Math.max(shake, 0.15);
       }
       else if (e.type === 'cocoon') renderer.cocoonBurst(e.x, e.y, groundLevel(state.map, e.x, e.y));
+      else if (e.type === 'cocoonHit') { renderer.cocoonHit(e.id); renderer.cocoonBurst(e.x, e.y, groundLevel(state.map, e.x, e.y)); shake = Math.max(shake, 0.12); }
       else if (e.type === 'shoot') renderer.muzzle(e.x, e.y, groundLevel(state.map, e.x, e.y));
       else if (e.type === 'webSplat') renderer.webSplat(e.x, e.y, e.z);
       else if (e.type === 'webTorn') renderer.webTorn();

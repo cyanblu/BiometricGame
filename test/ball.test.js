@@ -1,7 +1,7 @@
 // Dung beetle: the ball has momentum.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createState, step, DEFAULT_PARAMS, STEP, worldToScreen, wallClearance, makeSpider } from '../src/sim.js';
+import { createState, step, DEFAULT_PARAMS, STEP, worldToScreen, wallClearance, makeSpider, findPath } from '../src/sim.js';
 
 const BALL = { ...DEFAULT_PARAMS, mech: 'ball' };
 const P = BALL;
@@ -108,4 +108,51 @@ test('deterministic', () => {
   const script = (i) => ({ ...toward(Math.cos(i / 40), Math.sin(i / 30)), dash: i % 70 === 0 });
   const a = run(createState(room, 3, P), script, 8), b = run(createState(room, 3, P), script, 8);
   assert.deepEqual([a.player.ball.x, a.player.ball.y, a.player.x], [b.player.ball.x, b.player.ball.y, b.player.x]);
+});
+
+// A level-1 platform at x=8..13 with a ramp at x=7 (rising +x) on row 3.
+const terrace = {
+  name: 't',
+  map: ['################', '#..............#', '#..............#', '#.P............#', '#..............#', '#..............#', '################'],
+  heights: ['0000000000000000', '0000000011111100', '0000000011111100', '0000000>11111100', '0000000011111100', '0000000011111100', '0000000000000000'],
+};
+
+test('findPath walks round cliffs and up the ramp', () => {
+  const s = createState(terrace, 1, P);
+  const path = findPath(s.map, 2, 1, 10, 1); // ground (2,1) to platform (10,1)
+  assert.ok(path, 'found');
+  assert.ok(path.some(([x, y]) => x === 7 && y === 3), 'goes via the ramp');
+  assert.equal(findPath(s.map, 2, 1, 2, 1).length, 1);
+});
+
+test('separated from its ball (another floor), you steer the beetle freely', () => {
+  const s = createState(terrace, 1, P);
+  const b = s.player.ball;
+  b.x = 10.5; b.y = 1.5; b.z = 1; b.vx = 0; b.vy = 0; // ball up on the platform
+  s.player.x = 3.5; s.player.y = 1.5;
+  run(s, toward(0, 1), 0.5); // walk +y, away from the ball (and from the walls)
+  assert.ok(s.player.y > 3, `walked to y=${s.player.y.toFixed(2)}`);
+  assert.ok(Math.abs(Math.hypot(s.player.vx, s.player.vy) - P.maxSpeed) < 1e-6, 'at normal walking speed');
+  assert.equal(b.x, 10.5, 'ball untouched');
+});
+
+test('let go when separated: the beetle finds its way back to the ball, up the ramp', () => {
+  const s = createState(terrace, 1, P);
+  const b = s.player.ball;
+  b.x = 10.5; b.y = 1.5; b.z = 1; b.vx = 0; b.vy = 0;
+  s.player.x = 3.5; s.player.y = 1.5; // right below the cliff, the ball out of reach above
+  let t = 0;
+  while (t < 8) {
+    step(s, {}, P); t += STEP;
+    const d = Math.hypot(b.x - s.player.x, b.y - s.player.y);
+    if (d < P.radius + P.ballRadius + 0.6 && Math.abs(b.z - s.player.z) < 0.5) break;
+  }
+  assert.ok(t < 8, 'reached the ball');
+  assert.equal(s.player.z, 1, 'climbed to its floor');
+});
+
+test('once back at the ball, pushing works again', () => {
+  const s = createState(terrace, 1, P);
+  run(s, toward(1, 0), 0.6);
+  assert.ok(ballSpeed(s) > 1, `ball pushed to ${ballSpeed(s).toFixed(2)}`);
 });

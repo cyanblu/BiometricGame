@@ -154,7 +154,13 @@ least half its feet down and its feet within reach at walking and top speed.
 | Squash speed | 3 | tiles/s |
 | Beetle repositioning speed | 6 | tiles/s |
 
-1. The beetle runs to the spot behind the ball, opposite the direction you
+0. **Away from the ball** (more than 0.6 tiles beyond touching, on another
+   floor, or either of them in the air) you steer the beetle like any bug,
+   at its normal speed; e.g. walk it up the stairs to a ball left on a
+   platform. Let go and it finds its own way back: shortest walk over the
+   same walk-and-drop rules (`findPath`), tile by tile. Back at the ball,
+   pushing resumes.
+1. At the ball, the beetle runs to the spot behind it, opposite the direction you
    steer, and pushes when it touches the ball from behind (within 0.12 tiles,
    facing the push within about 53°).
 2. The ball accelerates slowly, keeps rolling when you let go and slows by
@@ -340,10 +346,15 @@ red glow of their own so the warning colours read in the dark.
    dung beetle pushes its ball at × 0.45 too). The net is drawn round the bug,
    strung from its body to its feet and the ground, trembling as it moves;
    when it wears off it fades out over 0.6 s.
-5. Starting a dash tears the web (the net bursts apart and fades in 0.25 s).
+5. Starting a dash tears the web (the net bursts apart and fades in 0.3 s).
    Webs do not stick to you during a dash.
-6. A dash (or a ball at squash speed) breaks a cocoon: it bursts, leaving a
-   torn husk, and a spider drops out from 1.4 levels above it and lands.
+6. A cocoon takes **3 hits**. Each dash counts once: the dash stops and you
+   bounce off (4 tiles/s). A ball at squash speed counts once per bounce (it
+   bounces off; 0.4 s between ball hits). Each hit shakes the turret (no shot
+   for 0.6 s). Looks: 2 left = split silk weeping ichor; 1 left = torn open,
+   eyes glowing inside, a leg twitching out; three lights on the collar show
+   what's left. On the third hit it bursts, leaving a torn husk, and a spider
+   drops out from 1.4 levels above it and lands.
 
 ## Spiders (from cocoons)
 
@@ -387,6 +398,14 @@ phones, which is 3 device pixels per art pixel on 2× screens).
 
 With 0 charges the bug goes dark: dull shell, unlit eye, no back light (it
 stops blinking) and no head lamp or glow.
+
+## Shadows
+
+Shadows belong to the floor. Each frame the shadows of the player, enemies,
+ball, batteries and cocoons are collected first; ground-level ones are drawn
+right after the ground floor, and each raised tile or slope draws the ones
+falling on it (same height), clipped to its top. So a tile drawn in front can
+never cut through a shadow, and a shadow never floats over a lower tile.
 
 ## Blood
 

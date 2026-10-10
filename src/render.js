@@ -279,9 +279,12 @@ export function createRenderer(canvas) {
       decorateCliff(f);
     }
     const base = map.level[i] * LEVEL_PX;
-    if (map.kind[i] === 1) drawRamp(tx, ty, map.sdx[i], map.sdy[i], base);
-    else if (map.kind[i] === 2) drawStairs(tx, ty, map.sdx[i], map.sdy[i], base);
-    else {
+    if (map.kind[i]) {
+      if (map.kind[i] === 1) drawRamp(tx, ty, map.sdx[i], map.sdy[i], base);
+      else drawStairs(tx, ty, map.sdx[i], map.sdy[i], base);
+      const lv = map.level[i] + 0.5;
+      shadowsOn(tx, ty, lv, () => slopeQuad(tx, ty, map.sdx[i], map.sdy[i], 0, 1, base, base + LEVEL_PX));
+    } else {
       ctx.save(); ctx.translate(0, -base);
       drawDeck(tx, ty, map.level[i]);
       // Worn bright lip along the front edges, so the drop reads.
@@ -291,6 +294,7 @@ export function createRenderer(canvas) {
       ctx.stroke();
       ctx.restore();
       drawTileBlood(tx, ty, base, true);
+      shadowsOn(tx, ty, map.level[i], () => diamond(tx, ty, base));
     }
     ctx.globalAlpha = 1;
   }
@@ -389,8 +393,6 @@ export function createRenderer(canvas) {
   function drawBigCell(s, t) {
     const X = sx(s.x, s.y), Y = sy(s.x, s.y) - liftAt(s.x, s.y);
     const seed = s.x * 3.1 + s.y * 7.7;
-    ctx.fillStyle = C.void1;
-    ctx.beginPath(); ctx.ellipse(X, Y, 12, 6, 0, 0, Math.PI * 2); ctx.fill();
     const top = Y - 24;
     ctx.fillStyle = C.blood1; ctx.fillRect(X - 7, top, 14, 24);
     ctx.fillStyle = C.blood2; ctx.fillRect(X - 7, top, 4, 24);
@@ -413,8 +415,6 @@ export function createRenderer(canvas) {
     if (s.big) { drawBigCell(s, t); return; }
     const X = sx(s.x, s.y), Y = sy(s.x, s.y) - liftAt(s.x, s.y);
     const seed = s.x * 3.1 + s.y * 7.7;
-    ctx.fillStyle = C.void1;
-    ctx.beginPath(); ctx.ellipse(X, Y, 7, 3.5, 0, 0, Math.PI * 2); ctx.fill();
     const top = Y - 15;
     ctx.fillStyle = C.cell0; ctx.fillRect(X - 4, top, 8, 15);
     ctx.fillStyle = C.cell1; ctx.fillRect(X - 4, top, 3, 15);
@@ -481,12 +481,44 @@ export function createRenderer(canvas) {
 
   // Ground shadow under a creature that may be in the air: stays on the floor,
   // shrinks and fades with height.
+  // Shadows are part of the floor: in the game they are collected first and
+  // drawn by the floor tile they fall on (see shadowsOn), so nothing drawn in
+  // front of that tile can cut through them. Menu previews draw them directly.
+  let previewMode = false;
+  const SHADOW = 'rgba(4,6,8,0.62)';
   function groundShadow(rig, a, b) {
-    const zl = rig.zLevel ?? lvAt(rig.pos.x, rig.pos.y);
-    const drop = Math.max(0, zl - lvAt(rig.pos.x, rig.pos.y));
-    const f = 1 / (1 + drop * 1.5);
-    ellipsePath(rig.pos.x, rig.pos.y, -drop * LEVEL_Z, rig.heading, a * f, b * f);
+    if (!previewMode) return;
+    ellipsePath(rig.pos.x, rig.pos.y, 0, rig.heading, a, b);
     ctx.fillStyle = C.void1; ctx.fill();
+  }
+  let shadows = [];
+  // A creature's shadow: an ellipse along its heading, shrinking with height.
+  function rigShadow(rig, a, b) {
+    const gz = lvAt(rig.pos.x, rig.pos.y), zl = rig.zLevel ?? gz;
+    const f = 1 / (1 + Math.max(0, zl - gz) * 1.5);
+    shadows.push({ x: rig.pos.x, y: rig.pos.y, gz, draw: () => {
+      ellipsePath(rig.pos.x, rig.pos.y, 0, rig.heading, a * f, b * f); ctx.fill();
+    } });
+  }
+  // A round shadow, sized in world pixels.
+  function discShadow(x, y, rx, ry, f = 1) {
+    const gz = lvAt(x, y);
+    shadows.push({ x, y, gz, draw: () => {
+      ctx.beginPath(); ctx.ellipse(sx(x, y), sy(x, y) - gz * LEVEL_PX, rx * f, ry * f, 0, 0, Math.PI * 2); ctx.fill();
+    } });
+  }
+  // Draw the shadows that fall on tile (tx, ty) at surface height `level`.
+  function shadowsOn(tx, ty, level, clipPath) {
+    let open = false;
+    for (const sh of shadows) {
+      if (Math.abs(Math.floor(sh.x) - tx) > 1 || Math.abs(Math.floor(sh.y) - ty) > 1) continue;
+      if (Math.abs(sh.gz - level) > (level % 1 ? 0.65 : 0.3)) continue;
+      if (!open) { ctx.save(); clipPath(); ctx.clip(); ctx.fillStyle = SHADOW; open = true; }
+      baseZ = sh.gz * LEVEL_Z;
+      sh.draw();
+      baseZ = 0;
+    }
+    if (open) ctx.restore();
   }
 
   function drawBug(rig, style, t) {
@@ -672,9 +704,10 @@ export function createRenderer(canvas) {
     const X = sx(b.x, b.y), base = sy(b.x, b.y) - bz * LEVEL_PX, floor = sy(b.x, b.y) - liftAt(b.x, b.y);
     const R = radius * Math.SQRT2 * HW;
     const Y = base - R * 0.9;
-    const f = 1 / (1 + Math.max(0, (floor - base) / LEVEL_PX) * 1.5); // shadow shrinks while it falls
-    ctx.fillStyle = C.void1;
-    ctx.beginPath(); ctx.ellipse(X, floor, R * 1.05 * f, R * 0.5 * f, 0, 0, Math.PI * 2); ctx.fill();
+    if (previewMode) {
+      ctx.fillStyle = C.void1;
+      ctx.beginPath(); ctx.ellipse(X, floor, R * 1.05, R * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+    }
     const g = ctx.createRadialGradient(X - R * 0.35, Y - R * 0.4, R * 0.1, X, Y, R);
     g.addColorStop(0, C.rust1); g.addColorStop(0.45, C.grime); g.addColorStop(1, C.void1);
     ctx.fillStyle = g;
@@ -699,7 +732,7 @@ export function createRenderer(canvas) {
   function renderPreview(target, rig, kind, t, ball) {
     const saved = { ctx, lights, map, baseZ, onePx, scale };
     const pc = target.getContext('2d', { willReadFrequently: true });
-    ctx = pc; lights = []; map = null; baseZ = 0;
+    ctx = pc; lights = []; map = null; baseZ = 0; previewMode = true;
     const s = 1; scale = s; onePx = 1 / s;
     pc.setTransform(1, 0, 0, 1, 0, 0);
     pc.fillStyle = C.void1; pc.fillRect(0, 0, target.width, target.height);
@@ -714,6 +747,7 @@ export function createRenderer(canvas) {
     quantize(img.data, target.width, target.height, table, 6);
     pc.putImageData(img, 0, 0);
     ({ ctx, lights, map, baseZ, onePx, scale } = saved);
+    previewMode = false;
   }
 
 
@@ -854,174 +888,264 @@ export function createRenderer(canvas) {
   }
 
   // ---- cocoons with web turrets ---------------------------------------------------
-  // A silk egg sac with a riveted turret collar round its middle. The barrel
-  // tracks the player, glows as it charges, and the red eye lights up when it
-  // sees you. Broken: a torn husk with the collar fallen beside it.
+  // A silk egg sac on a bolted anchor plate, wrapped in crossing strands, with a
+  // riveted turret collar round its middle: a sensor head and barrel that
+  // track the player, hydraulic hoses sunk into the silk. Damage shows: one hit
+  // splits the silk and it weeps; two hits tear it open, the spider's eyes
+  // glow inside and a leg pokes out. Hits flash it white and make it shudder.
+  const cocoonHits = new Map(); // id -> time of the last hit (for flash/shake)
+  function cocoonHit(id) { cocoonHits.set(id, 0); }
   function drawCocoon(c, t, state) {
-    const X = sx(c.x, c.y), G = sy(c.x, c.y) - c.z * LEVEL_PX;
-    const H = 30, W = 12;
-    ctx.strokeStyle = C.hull1; ctx.lineWidth = px(1);
-    for (let i = 0; i < 4; i++) { // silk guy lines to the floor
-      const a = i * 1.6 + 0.4;
-      ctx.beginPath(); ctx.moveTo(X + Math.cos(a) * 6, G - 8); ctx.lineTo(X + Math.cos(a) * 18, G + Math.sin(a) * 7); ctx.stroke();
+    const X0 = sx(c.x, c.y), G = sy(c.x, c.y) - c.z * LEVEL_PX;
+    const H = 32, W = 12;
+    const since = cocoonHits.get(c.id);
+    const shake = since !== undefined && since < 0.25 ? Math.sin(since * 80) * 2 * (1 - since / 0.25) : 0;
+    const flash = since !== undefined && since < 0.12;
+    const X = X0 + shake;
+    // Anchor plate with bolts, and silk guy lines.
+    ctx.fillStyle = C.metal0;
+    ctx.beginPath(); ctx.ellipse(X0, G, W + 2, 5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = C.metal2; ctx.lineWidth = px(1); ctx.stroke();
+    ctx.fillStyle = C.metal4;
+    for (let i = 0; i < 5; i++) { const a = i * 1.257 + 0.3; ctx.fillRect(X0 + Math.cos(a) * (W - 1) - onePx / 2, G + Math.sin(a) * 3.5 - onePx / 2, onePx, onePx); }
+    ctx.strokeStyle = C.hull1;
+    for (let i = 0; i < 5; i++) {
+      const a = i * 1.3 + 0.2;
+      ctx.beginPath(); ctx.moveTo(X + Math.cos(a) * 7, G - 10);
+      ctx.quadraticCurveTo(X0 + Math.cos(a) * 14, G - 2, X0 + Math.cos(a) * 20, G + Math.sin(a) * 7); ctx.stroke();
     }
-    ctx.fillStyle = C.void1;
-    ctx.beginPath(); ctx.ellipse(X, G, W + 4, 6, 0, 0, Math.PI * 2); ctx.fill();
-    if (!c.alive) {
-      // Torn husk.
-      ctx.fillStyle = C.hull0;
-      ctx.beginPath(); ctx.moveTo(X - W, G - 4);
-      for (let i = 0; i <= 8; i++) ctx.lineTo(X - W + (i / 8) * W * 2, G - 10 - (i % 2 ? 6 : 0) - hash(i, c.id) * 4);
-      ctx.lineTo(X + W, G - 4); ctx.quadraticCurveTo(X, G + 4, X - W, G - 4); ctx.fill();
-      ctx.fillStyle = C.void0; ctx.beginPath(); ctx.ellipse(X, G - 9, W - 3, 4, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = C.metal1; ctx.beginPath(); ctx.ellipse(X + 14, G + 3, 9, 3.5, 0.3, 0, Math.PI * 2); ctx.fill(); // fallen collar
-      ctx.strokeStyle = C.metal3; ctx.lineWidth = px(2);
-      ctx.beginPath(); ctx.moveTo(X + 10, G + 4); ctx.lineTo(X + 22, G + 1); ctx.stroke();
-      return;
-    }
+    if (!c.alive) { drawHusk(c, X0, G, W, H); return; }
+    const hp = c.hp ?? 3;
     const breathe = 1 + Math.sin(t * 2.2 + c.id) * 0.03;
-    const cy = G - H * 0.55;
+    const cy = G - H * 0.55, rx = W * breathe, ry = H * 0.55;
     const ux = Math.cos(c.aim), uy = Math.sin(c.aim);
     const bx = (ux - uy) * HW, by = (ux + uy) * HH, bl = Math.hypot(bx, by) || 1;
-    const barrelBack = ux + uy < 0;
-    const collarY = G - H * 0.48;
+    const dX = bx / bl, dY = by / bl;
+    const back = ux + uy < 0;
+    const collarY = G - H * 0.5;
     const charge = Math.min(1, c.charge / 0.45);
-    const drawBarrel = () => {
-      const ex = X + (bx / bl) * 16, ey = collarY + (by / bl) * 16 * 0.6;
+    const turret = () => {
+      // Sensor head on the collar, barrel out of it.
+      const hx = X + dX * (W - 1), hy = collarY + dY * 3;
+      const ex = hx + dX * 13, ey = hy + dY * 13 * 0.6 - 1;
       ctx.lineCap = 'butt';
-      ctx.strokeStyle = C.metal1; ctx.lineWidth = px(5);
-      ctx.beginPath(); ctx.moveTo(X, collarY); ctx.lineTo(ex, ey); ctx.stroke();
-      ctx.strokeStyle = C.metal3; ctx.lineWidth = px(1.5);
-      ctx.beginPath(); ctx.moveTo(X, collarY - 2); ctx.lineTo(ex, ey - 2); ctx.stroke();
-      ctx.fillStyle = charge > 0 ? (charge > 0.6 ? C.hot1 : C.hot0) : C.void0;
-      ctx.beginPath(); ctx.arc(ex, ey, px(2.5 + charge * 1.5), 0, Math.PI * 2); ctx.fill();
-      if (charge > 0) lights.push({ x: ex, y: ey, r: 18 + charge * 22, color: C.hot1, glow: 0.2 + charge * 0.4 });
+      ctx.strokeStyle = C.metal0; ctx.lineWidth = px(6);
+      ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(ex, ey); ctx.stroke();
+      ctx.strokeStyle = C.metal2; ctx.lineWidth = px(4);
+      ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(ex, ey); ctx.stroke();
+      ctx.strokeStyle = C.metal4; ctx.lineWidth = px(1);
+      ctx.beginPath(); ctx.moveTo(hx, hy - 1.5); ctx.lineTo(ex, ey - 1.5); ctx.stroke();
+      for (let k = 0.3; k < 1; k += 0.3) { // cooling rings
+        ctx.fillStyle = C.metal1; ctx.fillRect(hx + (ex - hx) * k - 1, hy + (ey - hy) * k - 3, 2, 6);
+      }
+      ctx.fillStyle = C.metal1;
+      ctx.beginPath(); ctx.ellipse(hx, hy - 1, 5, 4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = C.metal3;
+      ctx.beginPath(); ctx.ellipse(hx - 1, hy - 2.5, 3, 1.5, 0, 0, Math.PI * 2); ctx.fill();
+      // Lens: dim, red when it sees you.
+      ctx.fillStyle = c.sees ? C.hot1 : C.blood0;
+      ctx.beginPath(); ctx.arc(hx + dX * 2.5, hy - 1 + dY, px(1.6), 0, Math.PI * 2); ctx.fill();
+      if (c.sees) lights.push({ x: hx, y: hy, r: 18, color: C.hot1, glow: 0.25 });
+      // Muzzle: charges from dark to white-hot.
+      ctx.fillStyle = charge > 0.7 ? C.bone : charge > 0.35 ? C.hot1 : charge > 0 ? C.hot0 : C.void0;
+      ctx.beginPath(); ctx.arc(ex, ey, px(2.2 + charge * 1.8), 0, Math.PI * 2); ctx.fill();
+      if (charge > 0) lights.push({ x: ex, y: ey, r: 16 + charge * 26, color: C.hot1, glow: 0.2 + charge * 0.45 });
     };
-    if (barrelBack) drawBarrel();
-    // Pod.
-    const g = ctx.createRadialGradient(X - 4, cy - 8, 2, X, cy, H * 0.6);
-    g.addColorStop(0, C.bone); g.addColorStop(0.5, C.hull2); g.addColorStop(1, C.hull0);
+    if (back) turret();
+    // Pod: shaded silk, two layers of strands crossing, a loose tuft on top.
+    const g = ctx.createRadialGradient(X - 4, cy - 9, 2, X, cy, ry * 1.1);
+    g.addColorStop(0, flash ? C.bone : C.bone); g.addColorStop(0.45, flash ? C.bone : C.hull2); g.addColorStop(1, flash ? C.hull2 : C.hull0);
     ctx.fillStyle = g;
-    ctx.beginPath(); ctx.ellipse(X, cy, W * breathe, H * 0.55, 0, 0, Math.PI * 2); ctx.fill();
-    // Silk wrapping, and something shifting inside.
-    ctx.strokeStyle = C.hull1; ctx.lineWidth = px(1);
-    for (let i = -3; i <= 3; i++) {
-      ctx.beginPath();
-      ctx.moveTo(X - W * breathe, cy + i * 4 - 3);
-      ctx.quadraticCurveTo(X, cy + i * 4 + 4 + Math.sin(t * 1.5 + i) * 1.5, X + W * breathe, cy + i * 4 - 1);
-      ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(X, cy, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save(); ctx.beginPath(); ctx.ellipse(X, cy, rx, ry, 0, 0, Math.PI * 2); ctx.clip();
+    ctx.lineWidth = px(1);
+    for (let i = -6; i <= 6; i++) {
+      ctx.strokeStyle = i % 2 ? C.hull1 : C.hull2;
+      const o = i * 4 + Math.sin(t * 0.8 + i) * 0.8;
+      ctx.beginPath(); ctx.moveTo(X - rx, cy + o - 6); ctx.quadraticCurveTo(X, cy + o + 5, X + rx, cy + o + 2); ctx.stroke();
+      ctx.strokeStyle = C.hull1;
+      ctx.beginPath(); ctx.moveTo(X - rx, cy + o + 4); ctx.quadraticCurveTo(X, cy + o - 6, X + rx, cy + o - 3); ctx.stroke();
     }
-    ctx.fillStyle = 'rgba(20,24,28,0.35)';
-    ctx.beginPath(); ctx.ellipse(X + Math.sin(t * 0.9 + c.id) * 2.5, cy + 2, 4, 6, 0, 0, Math.PI * 2); ctx.fill();
-    // Turret collar.
-    ctx.fillStyle = C.metal1;
-    ctx.beginPath(); ctx.ellipse(X, collarY, W + 3, 4.5, 0, 0, Math.PI * 2); ctx.fill();
+    // Something shifting inside.
+    ctx.fillStyle = 'rgba(20,24,28,0.3)';
+    ctx.beginPath(); ctx.ellipse(X + Math.sin(t * 0.9 + c.id) * 2.5, cy + 2, 4.5, 7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = C.hull2;
+    for (let i = 0; i < 4; i++) { // tuft
+      ctx.beginPath(); ctx.moveTo(X - 2 + i, cy - ry + 1);
+      ctx.quadraticCurveTo(X - 6 + i * 4, cy - ry - 5, X - 8 + i * 5 + Math.sin(t * 2 + i) * 2, cy - ry - 3); ctx.stroke();
+    }
+    // Damage.
+    if (hp <= 2) {
+      // A split in the silk, weeping ichor.
+      ctx.fillStyle = C.void0;
+      ctx.beginPath(); ctx.moveTo(X - 3, cy - 9); ctx.lineTo(X + 1, cy - 4); ctx.lineTo(X - 2, cy + 1); ctx.lineTo(X + 2, cy + 7);
+      ctx.lineTo(X + 4, cy + 6); ctx.lineTo(X + 1, cy + 1); ctx.lineTo(X + 4, cy - 4); ctx.lineTo(X, cy - 9); ctx.closePath(); ctx.fill();
+      const drip = (t * 0.7 + c.id * 0.3) % 1;
+      ctx.fillStyle = C.cell0; ctx.fillRect(X + 2, cy + 7, 1, 3 + drip * 10);
+      ctx.fillStyle = C.cell1; ctx.fillRect(X + 2, cy + 9 + drip * 10, 2, 2);
+    }
+    if (hp <= 1) {
+      // Torn open: flaps hang, eyes glow inside, a leg pokes out and twitches.
+      ctx.fillStyle = C.void0;
+      ctx.beginPath(); ctx.ellipse(X - 1, cy - 1, 6, 9, 0.2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = C.hull1;
+      ctx.beginPath(); ctx.moveTo(X - 7, cy - 6); ctx.lineTo(X - 11, cy + 6); ctx.lineTo(X - 6, cy + 3); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(X + 5, cy - 7); ctx.lineTo(X + 10, cy + 2); ctx.lineTo(X + 5, cy); ctx.closePath(); ctx.fill();
+      for (const e of [-2, 1]) { ctx.fillStyle = C.hot1; ctx.fillRect(X + e, cy - 3, 1, 1); }
+      lights.push({ x: X, y: cy - 3, r: 14, color: C.hot0, glow: 0.3 });
+      const tw = Math.sin(t * 9 + c.id) * 0.4;
+      ctx.strokeStyle = C.void2; ctx.lineWidth = px(1.5);
+      ctx.beginPath(); ctx.moveTo(X + 2, cy + 2); ctx.lineTo(X + 9, cy - 2 + tw * 4); ctx.lineTo(X + 12, cy + 6 + tw * 3); ctx.stroke();
+    }
+    // Turret collar with rivets, hoses sunk into the silk.
+    ctx.strokeStyle = C.void1; ctx.lineWidth = px(2);
+    for (const sd of [-1, 1]) { ctx.beginPath(); ctx.moveTo(X + sd * (W - 2), collarY); ctx.quadraticCurveTo(X + sd * (W + 3), collarY - 9, X + sd * 4, cy - ry + 6); ctx.stroke(); }
+    ctx.fillStyle = C.metal0;
+    ctx.beginPath(); ctx.ellipse(X, collarY + 1, W + 3, 5, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = C.metal2;
-    ctx.beginPath(); ctx.ellipse(X, collarY - 1.5, W + 2, 3.2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(X, collarY - 0.5, W + 2, 3.6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = C.metal3; ctx.lineWidth = px(1); ctx.stroke();
     ctx.fillStyle = C.metal4;
-    for (let i = 0; i < 6; i++) { const a = i * (Math.PI / 3) + t * 0.3; ctx.fillRect(X + Math.cos(a) * (W + 1) - onePx / 2, collarY - 1.5 + Math.sin(a) * 2.6 - onePx / 2, onePx, onePx); }
-    // Sensor eye on the collar, facing the aim.
-    const eyeX = X + (bx / bl) * (W - 2), eyeY = collarY - 1 + (by / bl) * 2;
-    ctx.fillStyle = c.sees ? C.hot1 : C.blood0;
-    ctx.beginPath(); ctx.arc(eyeX, eyeY, px(1.6), 0, Math.PI * 2); ctx.fill();
-    if (c.sees) lights.push({ x: eyeX, y: eyeY, r: 18, color: C.hot1, glow: 0.25 });
-    if (!barrelBack) drawBarrel();
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      if (Math.sin(a) < -0.2) continue; // rivets on the visible front half
+      ctx.fillRect(X + Math.cos(a) * (W + 1) - onePx / 2, collarY - 0.5 + Math.sin(a) * 2.8 - onePx / 2, onePx, onePx);
+    }
+    // Damage pips on the collar: one light per hit left.
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = i < hp ? C.elec1 : C.void1;
+      ctx.fillRect(X - 4 + i * 4 - 1, collarY + 2, 2, 1);
+    }
+    if (!back) turret();
     lights.push({ x: X, y: cy, r: 30, color: C.bone, glow: 0.05 });
   }
 
-  // A web in flight: a spinning net blob trailing a thread back to its turret.
+  // A broken cocoon: the lower shell with ragged edges, loose strands, the
+  // collar fallen to one side with its barrel.
+  function drawHusk(c, X, G, W, H) {
+    ctx.fillStyle = C.hull0;
+    ctx.beginPath(); ctx.moveTo(X - W, G - 4);
+    for (let i = 0; i <= 10; i++) ctx.lineTo(X - W + (i / 10) * W * 2, G - 11 - (i % 2 ? 7 : 0) - hash(i, c.id) * 5);
+    ctx.lineTo(X + W, G - 4); ctx.quadraticCurveTo(X, G + 4, X - W, G - 4); ctx.fill();
+    ctx.fillStyle = C.void0; ctx.beginPath(); ctx.ellipse(X, G - 9, W - 3, 4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = C.hull2; ctx.lineWidth = px(1);
+    for (let i = 0; i < 5; i++) {
+      ctx.beginPath(); ctx.moveTo(X - W + i * 5, G - 14);
+      ctx.quadraticCurveTo(X - W + i * 5 + 3, G - 22, X - W + i * 6 + hash(i, c.id, 2) * 6, G - 18); ctx.stroke();
+    }
+    ctx.fillStyle = C.metal0; ctx.beginPath(); ctx.ellipse(X + 15, G + 3, 9, 3.5, 0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.metal2; ctx.beginPath(); ctx.ellipse(X + 15, G + 2, 7, 2.5, 0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = C.metal1; ctx.lineWidth = px(3);
+    ctx.beginPath(); ctx.moveTo(X + 11, G + 4); ctx.lineTo(X + 24, G + 1); ctx.stroke();
+  }
+
+  // Orb-web geometry around (X, Y): spokes, a spiral, sticky droplets.
+  // r: radius (px), squash: vertical scale, turn: rotation, sag: px of droop.
+  // Sized for the art resolution: one art pixel is 2 world px, so webs need a
+  // radius of 12+ px and few spiral turns for the strands to stay apart.
+  function orbWeb(X, Y, r, squash, turn, sag, t, seed, alpha, turns = 1.6, spokes = 7) {
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = px(1);
+    ctx.strokeStyle = C.bone;
+    ctx.beginPath();
+    for (let i = 0; i < spokes; i++) {
+      const a = turn + (i / spokes) * Math.PI * 2;
+      const ex = X + Math.cos(a) * r, ey = Y + Math.sin(a) * r * squash;
+      ctx.moveTo(X, Y); ctx.quadraticCurveTo((X + ex) / 2, (Y + ey) / 2 + sag * 0.5, ex, ey + sag * 0.3);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = C.hull1;
+    ctx.beginPath();
+    const steps = 40;
+    for (let i = 0; i <= steps; i++) {
+      const f = i / steps, a = turn + f * turns * Math.PI * 2, rr = r * (0.18 + f * 0.82);
+      const wob = Math.sin(t * 6 + i * 0.7 + seed) * 0.6;
+      const x = X + Math.cos(a) * rr, y = Y + Math.sin(a) * rr * squash + sag * f * f + wob;
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+    ctx.fillStyle = C.bone;
+    for (let i = 0; i < 4; i++) { // dew-like sticky droplets that glint
+      const a = turn + hash(i, seed) * Math.PI * 2, rr = r * (0.3 + hash(i, seed, 1) * 0.65);
+      if ((t * 3 + i) % 2 > 1.4) continue;
+      ctx.fillRect(X + Math.cos(a) * rr - onePx / 2, Y + Math.sin(a) * rr * squash + sag * 0.4 - onePx / 2, onePx, onePx);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // A web in flight: a tumbling orb web trailing a sagging silk thread back to
+  // its turret, with a few droplets along the thread.
   function drawWeb(w, t, state) {
     const X = sx(w.x, w.y), Y = sy(w.x, w.y) - w.z * LEVEL_PX;
     const src = state.cocoons.find((c) => c.id === w.from);
     if (src && src.alive) {
-      const SX = sx(src.x, src.y), SY = sy(src.x, src.y) - src.z * LEVEL_PX - 14;
-      ctx.globalAlpha = 0.5; ctx.strokeStyle = C.hull2; ctx.lineWidth = px(1);
-      ctx.beginPath(); ctx.moveTo(SX, SY); ctx.quadraticCurveTo((SX + X) / 2, (SY + Y) / 2 + 6, X, Y); ctx.stroke();
+      const SX = sx(src.x, src.y), SY = sy(src.x, src.y) - src.z * LEVEL_PX - 16;
+      const mx = (SX + X) / 2, my = (SY + Y) / 2 + 8;
+      ctx.globalAlpha = 0.55; ctx.strokeStyle = C.hull2; ctx.lineWidth = px(1);
+      ctx.beginPath(); ctx.moveTo(SX, SY); ctx.quadraticCurveTo(mx, my, X, Y); ctx.stroke();
+      ctx.fillStyle = C.bone;
+      for (const f of [0.25, 0.5, 0.75]) {
+        const qx = (1 - f) * (1 - f) * SX + 2 * f * (1 - f) * mx + f * f * X, qy = (1 - f) * (1 - f) * SY + 2 * f * (1 - f) * my + f * f * Y;
+        ctx.fillRect(qx - onePx / 2, qy - onePx / 2, onePx, onePx);
+      }
       ctx.globalAlpha = 1;
     }
-    const spin = t * 10 + w.id;
-    ctx.strokeStyle = C.bone; ctx.lineWidth = px(1);
-    ctx.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const a = spin + (i / 6) * Math.PI * 2;
-      ctx.moveTo(X, Y); ctx.lineTo(X + Math.cos(a) * 7, Y + Math.sin(a) * 4.5);
-    }
-    ctx.stroke();
-    ctx.beginPath();
-    for (let i = 0; i <= 6; i++) {
-      const a = spin + (i / 6) * Math.PI * 2;
-      const r = 4 + Math.sin(t * 20 + i) * 0.6;
-      if (i) ctx.lineTo(X + Math.cos(a) * r, Y + Math.sin(a) * r * 0.65); else ctx.moveTo(X + Math.cos(a) * r, Y + Math.sin(a) * r * 0.65);
-    }
-    ctx.stroke();
-    lights.push({ x: X, y: Y, r: 16, color: C.bone, glow: 0.15 });
+    const pulse = 1 + Math.sin(t * 14 + w.id) * 0.12;
+    orbWeb(X, Y, 13 * pulse, 0.7, t * 6 + w.id, 0, t, w.id, 0.9, 1.3, 6);
+    lights.push({ x: X, y: Y, r: 18, color: C.bone, glow: 0.15 });
   }
 
-  // The web wrapped round the player: spokes from the body to its feet and
-  // around it, rings strung between them. It moves with the legs, trembles,
-  // and fades (or bursts apart when torn by a dash) when the slowdown ends.
+  // The web wrapped round the player: an orb web over its back, anchored by
+  // threads to its feet and the floor, trembling as the legs move. When the
+  // slowdown ends it sags and fades; torn by a dash it bursts outward.
   const net = { strength: 0, torn: false };
   function webTorn() { net.torn = true; }
   function drawNet(rig, p, t, dt) {
-    if (p.webbed > 0) { net.strength = 1; net.torn = false; } else net.strength = Math.max(0, net.strength - dt / (net.torn ? 0.25 : 0.6));
+    if (p.webbed > 0) { net.strength = 1; net.torn = false; } else net.strength = Math.max(0, net.strength - dt / (net.torn ? 0.3 : 0.7));
     if (net.strength <= 0) return;
     const o = rig.opts, k = o.scale;
     const zl = rig.zLevel ?? lvAt(rig.pos.x, rig.pos.y);
     baseZ = zl * LEVEL_Z;
     const z = o.bodyHeight * k + rig.bodyDip;
     const [cx, cy] = P3(rig.pos.x, rig.pos.y, z + 0.06);
-    const spread = net.torn ? 1 + (1 - net.strength) * 0.9 : 1;
-    // Anchors: every foot, plus a ring round the body on the ground.
+    const fade = 1 - net.strength;
+    const spread = net.torn ? 1 + fade * 1.2 : 1;
+    const sag = fade * 10; // a dying web droops
+    // Anchor threads to every foot and a ring on the floor.
     const anchors = rig.legs.map((l) => {
       const fg = rig.air ? 0 : (lvAt(l.foot.x, l.foot.y) - zl) * LEVEL_Z;
       return P3(l.foot.x, l.foot.y, l.lift + fg);
     });
     for (let i = 0; i < 6; i++) {
       const a = rig.heading + (i / 6) * Math.PI * 2 + 0.3;
-      anchors.push(P3(rig.pos.x + Math.cos(a) * 0.42 * k, rig.pos.y + Math.sin(a) * 0.42 * k, 0));
+      anchors.push(P3(rig.pos.x + Math.cos(a) * 0.45 * k, rig.pos.y + Math.sin(a) * 0.45 * k, 0));
     }
-    const spokes = anchors
-      .map(([ax, ay]) => [cx + (ax - cx) * spread, cy + (ay - cy) * spread])
-      .sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
-    ctx.globalAlpha = 0.85 * net.strength;
-    ctx.strokeStyle = C.bone; ctx.lineWidth = px(1);
+    ctx.globalAlpha = 0.8 * net.strength;
+    ctx.strokeStyle = C.hull2; ctx.lineWidth = px(1);
     ctx.beginPath();
-    spokes.forEach(([ax, ay], i) => {
-      const sag = 2 + Math.sin(t * 7 + i * 1.3) * 1.2;
-      ctx.moveTo(cx, cy); ctx.quadraticCurveTo((cx + ax) / 2, (cy + ay) / 2 + sag, ax, ay);
+    anchors.forEach(([ax, ay], i) => {
+      if (net.torn && i % 3 === 0) return; // snapped threads
+      const ex = cx + (ax - cx) * spread, ey = cy + (ay - cy) * spread + sag;
+      ctx.moveTo(cx, cy); ctx.quadraticCurveTo((cx + ex) / 2 + Math.sin(t * 7 + i) * 1.5, (cy + ey) / 2 + 3 + sag, ex, ey);
     });
     ctx.stroke();
-    ctx.strokeStyle = C.hull2;
-    for (const f of [0.3, 0.55, 0.8]) {
-      ctx.beginPath();
-      spokes.forEach(([ax, ay], i) => {
-        const j = spokes[(i + 1) % spokes.length];
-        if (net.torn && i % 2) return; // torn rings hang in pieces
-        const x0 = cx + (ax - cx) * f, y0 = cy + (ay - cy) * f;
-        const x1 = cx + (j[0] - cx) * f, y1 = cy + (j[1] - cy) * f;
-        const wob = Math.sin(t * 6 + i * 1.7 + f * 9) * 1.2;
-        ctx.moveTo(x0, y0); ctx.quadraticCurveTo((x0 + x1) / 2, (y0 + y1) / 2 + 1.5 + wob, x1, y1);
-      });
-      ctx.stroke();
-    }
     ctx.globalAlpha = 1;
+    // The orb itself, flattened over the body, slowly turning and trembling.
+    const r = Math.max(16, (0.6 * k) * Math.SQRT2 * HW) * spread;
+    orbWeb(cx, cy + 2, r, 0.55, t * 0.6 + Math.sin(t * 5) * 0.05, sag, t, 7, 0.75 * net.strength, 2, 8);
     baseZ = 0;
   }
 
-  // Webs that hit a wall stay stuck there for a few seconds.
+  // Webs that hit a wall stay stuck there for a few seconds, then droop and fade.
   const splats = [];
-  function webSplat(x, y, z) { splats.push({ x, y, z, life: 1 }); }
+  function webSplat(x, y, z) { splats.push({ x, y, z, life: 1, seed: Math.random() * 10 }); }
   function drawSplats(dt) {
     for (const sp of splats) {
       sp.life -= dt / 4;
       if (sp.life <= 0) continue;
       const X = sx(sp.x, sp.y), Y = sy(sp.x, sp.y) - sp.z * LEVEL_PX;
-      ctx.globalAlpha = Math.min(1, sp.life * 2) * 0.8;
-      ctx.strokeStyle = C.bone; ctx.lineWidth = px(1);
-      ctx.beginPath();
-      for (let i = 0; i < 7; i++) { const a = (i / 7) * Math.PI * 2 + sp.x; ctx.moveTo(X, Y); ctx.lineTo(X + Math.cos(a) * 9, Y + Math.sin(a) * 6); }
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+      orbWeb(X, Y, 15, 0.75, sp.seed, (1 - sp.life) * 6, 0, sp.seed, Math.min(1, sp.life * 2) * 0.8, 1.6, 7);
     }
     while (splats.length && splats[0].life <= 0) splats.shift();
   }
@@ -1289,7 +1413,26 @@ export function createRenderer(canvas) {
     ctx.lineTo(sx(0, map.h), sy(0, map.h) + 22);
     ctx.closePath(); ctx.fill();
 
-    // Ground level: flat level-0 floor first, with its blood and vents.
+    // Shadows of everything that stands, collected before the floor is drawn.
+    shadows = [];
+    {
+      const pr0 = rigs.player, k0 = pr0.opts.scale, hm = rigs.kind === 'harvestman';
+      rigShadow(pr0, (hm ? 0.16 : 0.3) * k0, (hm ? 0.14 : 0.2) * k0);
+      for (const c of state.critters) {
+        const rig = rigs.critters.get(c.id);
+        if (rig) rigShadow(rig, (c.type === 'spider' ? 0.32 : 0.28) * rig.opts.scale, (c.type === 'spider' ? 0.26 : 0.16) * rig.opts.scale);
+      }
+      const b = p.ball;
+      if (b) {
+        const R = (rigs.ballRadius || 0.32) * Math.SQRT2 * HW;
+        const bz = (b.pz ?? b.z) + (b.z - (b.pz ?? b.z)) * view.alpha;
+        discShadow(b.x, b.y, R * 1.05, R * 0.5, 1 / (1 + Math.max(0, bz - lvAt(b.x, b.y)) * 1.5));
+      }
+      for (const sc of state.shards) if (!sc.taken) discShadow(sc.x, sc.y, sc.big ? 12 : 7, sc.big ? 6 : 3.5);
+      for (const c of state.cocoons) discShadow(c.x, c.y, 16, 6.5);
+    }
+
+    // Ground level: flat level-0 floor first, with its blood, vents and shadows.
     const ground = (tx, ty) => { const i = ty * map.w + tx; return !map.solid[i] && !map.kind[i] && map.level[i] === 0; };
     for (let ty = 0; ty < map.h; ty++) {
       for (let tx = 0; tx < map.w; tx++) if (ground(tx, ty)) drawFloor(tx, ty, t);
@@ -1301,6 +1444,8 @@ export function createRenderer(canvas) {
       }
     }
     for (const v of state.vents) if (ground(Math.floor(v.x), Math.floor(v.y))) drawVent(v, t, dt);
+    ctx.fillStyle = SHADOW;
+    for (const sh of shadows) if (sh.gz < 0.05 && ground(Math.floor(sh.x), Math.floor(sh.y))) { sh.draw(); }
 
     // Dash afterimage.
     const pr = rigs.player;
@@ -1394,6 +1539,7 @@ export function createRenderer(canvas) {
     }
 
     drawSplats(dt);
+    for (const [id, tt] of cocoonHits) cocoonHits.set(id, tt + dt);
 
     for (const q of fx.particles) {
       ctx.globalAlpha = Math.max(0, Math.min(1, q.life));
@@ -1446,7 +1592,7 @@ export function createRenderer(canvas) {
 
   return {
     resize, draw, burst, hitFx, splat, updateFx, bloodSplatter, bakeHusk, resetDecals,
-    dust, cocoonBurst, muzzle, webSplat, webTorn,
+    dust, cocoonBurst, muzzle, webSplat, webTorn, cocoonHit,
     ventPuff: (v) => ventPuff(v, 14),
     renderPreview,
     resetBall: () => { ballSpin.x = null; ballSpin.m = [1, 0, 0, 0, 1, 0, 0, 0, 1]; },
